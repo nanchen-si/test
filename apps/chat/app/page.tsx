@@ -2,6 +2,12 @@
 
 import { FormEvent, useState } from "react";
 
+import {
+  formatPlace,
+  isPlaceCandidate,
+  type PlaceCandidate,
+} from "../lib/place";
+
 type Message = {
   role: "user" | "assistant";
   content: string;
@@ -30,11 +36,10 @@ export default function ChatPage() {
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState("等待输入");
   const [isSending, setIsSending] = useState(false);
+  const [candidates, setCandidates] = useState<PlaceCandidate[]>([]);
+  const [confirmedPlace, setConfirmedPlace] = useState<PlaceCandidate>();
 
-  async function sendMessage(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const message = draft.trim();
-
+  async function submitMessage(message: string, selectedPlace?: PlaceCandidate) {
     if (!message || isSending) {
       return;
     }
@@ -52,7 +57,7 @@ export default function ChatPage() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, message }),
+        body: JSON.stringify({ sessionId, message, selectedPlace }),
       });
 
       if (!response.ok || !response.body) {
@@ -62,6 +67,7 @@ export default function ChatPage() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let waitingForPlaceSelection = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -74,6 +80,10 @@ export default function ChatPage() {
 
           if (serverEvent?.event === "message.start") {
             setStatus("正在生成回答");
+          } else if (serverEvent?.event === "tool.start") {
+            setStatus("正在解析地点");
+          } else if (serverEvent?.event === "tool.complete") {
+            setStatus("地点解析完成");
           } else if (serverEvent?.event === "text.delta") {
             setMessages((current) => {
               const next = [...current];
@@ -86,8 +96,21 @@ export default function ChatPage() {
               }
               return next;
             });
+          } else if (serverEvent?.event === "place.candidates") {
+            const parsed: unknown = JSON.parse(serverEvent.data.candidates);
+            if (Array.isArray(parsed) && parsed.every(isPlaceCandidate)) {
+              waitingForPlaceSelection = true;
+              setCandidates(parsed);
+              setStatus("请选择一个地点");
+            }
+          } else if (serverEvent?.event === "place.confirmed") {
+            const parsed: unknown = JSON.parse(serverEvent.data.place);
+            if (isPlaceCandidate(parsed)) {
+              setConfirmedPlace(parsed);
+              setCandidates([]);
+            }
           } else if (serverEvent?.event === "message.complete") {
-            setStatus("已完成");
+            setStatus(waitingForPlaceSelection ? "请选择一个地点" : "已完成");
           } else if (serverEvent?.event === "error") {
             throw new Error(serverEvent.data.message);
           }
@@ -117,6 +140,11 @@ export default function ChatPage() {
     }
   }
 
+  function sendMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void submitMessage(draft.trim());
+  }
+
   return (
     <main className="page-shell">
       <section className="chat-card" aria-label="天气助手聊天">
@@ -141,6 +169,32 @@ export default function ChatPage() {
             <li className="empty-state">你好，我可以和你进行中文对话。</li>
           )}
         </ol>
+
+        {candidates.length > 0 && (
+          <section className="place-candidates" aria-label="地点候选">
+            <p>请选择一个地点</p>
+            <div className="candidate-list">
+              {candidates.map((candidate) => (
+                <button
+                  type="button"
+                  key={candidate.id}
+                  onClick={() =>
+                    void submitMessage(`确认地点：${formatPlace(candidate)}`, candidate)
+                  }
+                  disabled={isSending}
+                >
+                  {formatPlace(candidate)}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {confirmedPlace && (
+          <p className="confirmed-place">
+            当前已确认地点：{formatPlace(confirmedPlace)}
+          </p>
+        )}
 
         <p className="status" role="status">
           {status}

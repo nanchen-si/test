@@ -6,6 +6,14 @@ export interface DeepSeekClient {
   stream(messages: readonly ChatMessage[]): AsyncGenerator<string>;
 }
 
+export function extractPlaceQuery(message: string): string | null {
+  const match = message.trim().match(
+    /^(?:(?:请)?(?:查询|查一下|看看|告诉我)|帮我查)?\s*(.+?)(?:(?:的)?天气|weather|今天|明天|后天|未来|下雨)/iu,
+  );
+  const query = match?.[1]?.trim().replace(/的$/u, "");
+  return query && query.length <= 100 ? query : null;
+}
+
 function createDeterministicReply(messages: readonly ChatMessage[]): string {
   const lastUserMessage = [...messages]
     .reverse()
@@ -40,7 +48,7 @@ export function createDeterministicDeepSeekClient(): DeepSeekClient {
   };
 }
 
-async function* streamReply(reply: string): AsyncGenerator<string> {
+export async function* streamReply(reply: string): AsyncGenerator<string> {
   for (const character of Array.from(reply)) {
     yield character;
     await new Promise((resolve) => setTimeout(resolve, 25));

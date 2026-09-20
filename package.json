@@ -1,11 +1,12 @@
 {
   "name": "weather-assistant",
   "private": true,
-  "workspaces": ["apps/chat"],
+  "workspaces": ["apps/chat", "apps/weather-mcp"],
   "scripts": {
     "dev": "npm run dev --workspace @weather-assistant/chat",
+    "dev:mcp": "npm run dev --workspace @weather-assistant/weather-mcp",
     "build": "npm run build --workspace @weather-assistant/chat",
-    "typecheck": "npm run typecheck --workspace @weather-assistant/chat",
+    "typecheck": "npm run typecheck --workspaces --if-present",
     "test:e2e": "playwright test"
   },
   "devDependencies": {

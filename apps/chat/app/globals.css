@@ -120,6 +120,47 @@ h1 {
   font-size: 13px;
 }
 
+.place-candidates {
+  margin: 0 32px 18px;
+  padding: 16px;
+  border: 1px solid #cfe5ea;
+  border-radius: 14px;
+  background: #f2fafb;
+}
+
+.place-candidates p,
+.confirmed-place {
+  margin: 0 0 10px;
+  color: #397083;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.candidate-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.candidate-list button {
+  padding: 9px 12px;
+  border: 1px solid #9ecbd4;
+  border-radius: 10px;
+  color: #205c6e;
+  background: white;
+  cursor: pointer;
+}
+
+.candidate-list button:hover,
+.candidate-list button:focus-visible {
+  border-color: #247d93;
+  background: #e7f5f7;
+}
+
+.confirmed-place {
+  margin: 0 32px 12px;
+}
+
 .composer {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -185,6 +226,12 @@ h1 {
   }
 
   .status {
+    margin-left: 20px;
+    margin-right: 20px;
+  }
+
+  .place-candidates,
+  .confirmed-place {
     margin-left: 20px;
     margin-right: 20px;
   }

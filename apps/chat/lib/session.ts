@@ -1,21 +1,29 @@
+import type { PlaceCandidate } from "./place";
+
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
 };
 
-const sessions = new Map<string, ChatMessage[]>();
+export type ConversationSession = {
+  messages: ChatMessage[];
+  pendingPlaces: PlaceCandidate[];
+  confirmedPlace?: PlaceCandidate;
+};
 
-export function getMessages(sessionId: string): ChatMessage[] {
+const sessions = new Map<string, ConversationSession>();
+
+export function getSession(sessionId: string): ConversationSession {
   const existing = sessions.get(sessionId);
   if (existing) {
     return existing;
   }
 
-  const messages: ChatMessage[] = [];
-  sessions.set(sessionId, messages);
-  return messages;
+  const session: ConversationSession = { messages: [], pendingPlaces: [] };
+  sessions.set(sessionId, session);
+  return session;
 }
 
 export function appendMessage(sessionId: string, message: ChatMessage): void {
-  getMessages(sessionId).push(message);
+  getSession(sessionId).messages.push(message);
 }
