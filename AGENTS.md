@@ -14,4 +14,4 @@ This is a single-context repository with root-level `CONTEXT.md` and `docs/adr/`
 
 ## 提交规则
 
-每次对仓库文件进行改动后，都必须执行一次 `git commit`，并在提交信息中明确说明本次改动事项。
+每次对仓库文件进行改动后，都必须执行一次 `git commit`，并在提交信息中明确说明本次改动事项；每次提交完成后，都必须立即将提交推送到 GitHub 远程仓库。
