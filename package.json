@@ -1,0 +1,14 @@
+{
+  "name": "weather-assistant",
+  "private": true,
+  "workspaces": ["apps/chat"],
+  "scripts": {
+    "dev": "npm run dev --workspace @weather-assistant/chat",
+    "build": "npm run build --workspace @weather-assistant/chat",
+    "typecheck": "npm run typecheck --workspace @weather-assistant/chat",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}
