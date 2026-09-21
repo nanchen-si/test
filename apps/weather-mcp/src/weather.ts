@@ -20,6 +20,25 @@ export type WeatherFact = {
   source: string;
 };
 
+export type DailyForecastDay = {
+  date: string;
+  condition: string;
+  temperatureMinC: number;
+  temperatureMaxC: number;
+  precipitationProbability?: number;
+  precipitationMm?: number;
+  precipitationType?: string;
+  windDirection?: string;
+  windSpeedMps?: number;
+};
+
+export type DailyForecast = {
+  place: PlaceCandidate;
+  timeZone: string;
+  days: DailyForecastDay[];
+  source: string;
+};
+
 export type WeatherErrorCategory =
   | "configuration"
   | "unauthorized"
@@ -108,6 +127,79 @@ const FIXTURE_WEATHER: Record<string, WeatherFact> = {
   },
 };
 
+const FIXTURE_FORECAST_DAYS: Omit<DailyForecastDay, "date">[] = [
+  {
+    condition: "多云",
+    temperatureMinC: 8,
+    temperatureMaxC: 16,
+    precipitationProbability: 20,
+    precipitationMm: 0,
+    precipitationType: "none",
+    windDirection: "北风",
+    windSpeedMps: 2.1,
+  },
+  {
+    condition: "晴",
+    temperatureMinC: 7,
+    temperatureMaxC: 17,
+    precipitationProbability: 10,
+    precipitationMm: 0,
+    precipitationType: "none",
+    windDirection: "东北风",
+    windSpeedMps: 1.8,
+  },
+  {
+    condition: "小雨",
+    temperatureMinC: 6,
+    temperatureMaxC: 12,
+    precipitationProbability: 70,
+    precipitationMm: 2.4,
+    precipitationType: "rain",
+    windDirection: "东风",
+    windSpeedMps: 3.4,
+  },
+  {
+    condition: "阴",
+    temperatureMinC: 5,
+    temperatureMaxC: 11,
+    precipitationProbability: 40,
+    precipitationMm: 0.5,
+    precipitationType: "rain",
+    windDirection: "东南风",
+    windSpeedMps: 2.9,
+  },
+  {
+    condition: "晴",
+    temperatureMinC: 4,
+    temperatureMaxC: 13,
+    precipitationProbability: 5,
+    precipitationMm: 0,
+    precipitationType: "none",
+    windDirection: "南风",
+    windSpeedMps: 2.2,
+  },
+  {
+    condition: "多云",
+    temperatureMinC: 6,
+    temperatureMaxC: 15,
+    precipitationProbability: 25,
+    precipitationMm: 0,
+    precipitationType: "none",
+    windDirection: "西南风",
+    windSpeedMps: 2.7,
+  },
+  {
+    condition: "晴",
+    temperatureMinC: 7,
+    temperatureMaxC: 16,
+    precipitationProbability: 10,
+    precipitationMm: 0,
+    precipitationType: "none",
+    windDirection: "西风",
+    windSpeedMps: 2.4,
+  },
+];
+
 const qWeatherResponseSchema = z
   .object({
     updateTime: z.string().optional(),
@@ -132,19 +224,43 @@ const qWeatherResponseSchema = z
 
 const qWeatherDailyResponseSchema = z
   .object({
+    metadata: z
+      .object({ attributions: z.array(z.string()).optional() })
+      .optional(),
     days: z.array(
       z.object({
+        forecastStartTime: z.string(),
+        temperatureMin: z.object({ value: z.number() }),
+        temperatureMax: z.object({ value: z.number() }),
         daytime: z
           .object({
+            condition: z.object({ text: z.string() }),
+            wind: z.object({
+              direction: z.object({ compass: z.string() }),
+              speed: z.object({ value: z.number() }),
+            }),
             precipitation: z
-              .object({ probability: z.number().min(0).max(1) })
+              .object({
+                amount: z.object({ value: z.number() }).optional(),
+                probability: z.number().min(0).max(1).optional(),
+                type: z.string().optional(),
+              })
               .optional(),
           })
           .optional(),
         nighttime: z
           .object({
+            condition: z.object({ text: z.string() }),
+            wind: z.object({
+              direction: z.object({ compass: z.string() }),
+              speed: z.object({ value: z.number() }),
+            }),
             precipitation: z
-              .object({ probability: z.number().min(0).max(1) })
+              .object({
+                amount: z.object({ value: z.number() }).optional(),
+                probability: z.number().min(0).max(1).optional(),
+                type: z.string().optional(),
+              })
               .optional(),
           })
           .optional(),
@@ -285,6 +401,151 @@ async function fetchQWeather(place: PlaceCandidate): Promise<WeatherFact> {
   }
 }
 
+function formatLocalDate(dateTime: string, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(dateTime));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getFutureLocalDate(timeZone: string, daysAhead: number): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const date = new Date(
+    Date.UTC(
+      Number(values.year),
+      Number(values.month) - 1,
+      Number(values.day) + daysAhead,
+      12,
+    ),
+  );
+  return formatLocalDate(date.toISOString(), timeZone);
+}
+
+async function fetchQWeatherDaily(
+  place: PlaceCandidate,
+  days: number,
+): Promise<DailyForecast> {
+  const apiHost = process.env.QWEATHER_API_HOST?.replace(/\/$/u, "");
+  if (!apiHost) {
+    throw new WeatherProviderError("configuration", "QWeather API host is missing");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  const requestedDays = Math.min(Math.max(Math.trunc(days), 1), 7);
+  const providerDays = requestedDays + 1;
+
+  try {
+    const response = await fetch(
+      `${apiHost}/weather/v1/daily/${place.latitude}/${place.longitude}?days=${providerDays}&localTime=true&lang=zh`,
+      {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${createQWeatherJwt()}`,
+        },
+        signal: controller.signal,
+      },
+    );
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new WeatherProviderError("invalid_data", "QWeather response is not JSON");
+    }
+
+    if (!response.ok) {
+      throw new WeatherProviderError(
+        response.status === 401 || response.status === 403
+          ? "unauthorized"
+          : "unavailable",
+        `QWeather returned HTTP ${response.status}`,
+      );
+    }
+
+    const parsed = qWeatherDailyResponseSchema.safeParse(payload);
+    if (!parsed.success || parsed.data.days.length < providerDays) {
+      throw new WeatherProviderError("invalid_data", "QWeather forecast is incomplete");
+    }
+
+    const forecastDays = parsed.data.days.slice(1, providerDays).map((day) => {
+      const daytime = day.daytime;
+      const nighttime = day.nighttime;
+      if (!daytime && !nighttime) {
+        throw new WeatherProviderError("invalid_data", "QWeather forecast day is incomplete");
+      }
+      const selectedPeriod = daytime ?? nighttime;
+      if (!selectedPeriod) {
+        throw new WeatherProviderError("invalid_data", "QWeather forecast day is incomplete");
+      }
+      const periods = [daytime, nighttime].filter(
+        (period): period is NonNullable<typeof daytime> => period !== undefined,
+      );
+      const probabilities = periods
+        .map((period) => period.precipitation?.probability)
+        .filter((value): value is number => value !== undefined);
+      const amounts = periods
+        .map((period) => period.precipitation?.amount?.value)
+        .filter((value): value is number => value !== undefined);
+      return {
+        date: formatLocalDate(day.forecastStartTime, place.timeZone),
+        condition: selectedPeriod.condition.text,
+        temperatureMinC: day.temperatureMin.value,
+        temperatureMaxC: day.temperatureMax.value,
+        precipitationProbability:
+          probabilities.length > 0
+            ? Math.round(Math.max(...probabilities) * 100)
+            : undefined,
+        precipitationMm: amounts.length > 0 ? Math.max(...amounts) : undefined,
+        precipitationType:
+          daytime?.precipitation?.type ?? nighttime?.precipitation?.type,
+        windDirection: selectedPeriod.wind.direction.compass,
+        windSpeedMps: selectedPeriod.wind.speed.value,
+      } satisfies DailyForecastDay;
+    });
+
+    return {
+      place,
+      timeZone: place.timeZone,
+      days: forecastDays,
+      source: parsed.data.metadata?.attributions?.[0] ?? "QWeather",
+    };
+  } catch (error) {
+    if (error instanceof WeatherProviderError) {
+      throw error;
+    }
+
+    throw new WeatherProviderError("unavailable", "QWeather forecast request failed");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function getFixtureDailyForecast(
+  place: PlaceCandidate,
+  days: number,
+): DailyForecast {
+  return {
+    place,
+    timeZone: place.timeZone,
+    days: FIXTURE_FORECAST_DAYS.slice(0, days).map((day, index) => ({
+      ...day,
+      date: getFutureLocalDate(place.timeZone, index + 1),
+    })),
+    source: "deterministic-weather-fixture",
+  };
+}
+
 export async function getCurrentWeather(place: PlaceCandidate): Promise<WeatherFact> {
   const dataSource =
     process.env.WEATHER_MCP_DATA_SOURCE ??
@@ -303,6 +564,29 @@ export async function getCurrentWeather(place: PlaceCandidate): Promise<WeatherF
 
   if (dataSource === "qweather") {
     return fetchQWeather(place);
+  }
+
+  throw new WeatherProviderError(
+    "configuration",
+    `Unsupported weather data source: ${dataSource}`,
+  );
+}
+
+export async function getDailyForecast(
+  place: PlaceCandidate,
+  days = 7,
+): Promise<DailyForecast> {
+  const requestedDays = Math.min(Math.max(Math.trunc(days), 1), 7);
+  const dataSource =
+    process.env.WEATHER_MCP_DATA_SOURCE ??
+    (process.env.QWEATHER_API_HOST ? "qweather" : "fixture");
+
+  if (dataSource === "fixture") {
+    return getFixtureDailyForecast(place, requestedDays);
+  }
+
+  if (dataSource === "qweather") {
+    return fetchQWeatherDaily(place, requestedDays);
   }
 
   throw new WeatherProviderError(

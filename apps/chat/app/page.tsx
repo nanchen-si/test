@@ -84,12 +84,16 @@ export default function ChatPage() {
             setStatus(
               serverEvent.data.name === "current_weather"
                 ? "正在查询天气"
+                : serverEvent.data.name === "daily_forecast"
+                  ? "正在查询预报"
                 : "正在解析地点",
             );
           } else if (serverEvent?.event === "tool.complete") {
             setStatus(
               serverEvent.data.name === "current_weather"
                 ? "天气查询完成"
+                : serverEvent.data.name === "daily_forecast"
+                  ? "预报查询完成"
                 : "地点解析完成",
             );
           } else if (serverEvent?.event === "text.delta") {

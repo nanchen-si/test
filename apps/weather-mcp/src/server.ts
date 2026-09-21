@@ -6,10 +6,24 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 
 import { resolvePlaces } from "./places.js";
-import { getCurrentWeather, WeatherProviderError } from "./weather.js";
+import {
+  getCurrentWeather,
+  getDailyForecast,
+  WeatherProviderError,
+} from "./weather.js";
 
 const host = process.env.WEATHER_MCP_HOST ?? "127.0.0.1";
 const port = Number(process.env.WEATHER_MCP_PORT ?? 3101);
+
+const confirmedPlaceSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  administrativeArea: z.string().min(1),
+  country: z.string().min(1),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  timeZone: z.string().min(1),
+});
 
 function createWeatherServer() {
   const server = new McpServer({ name: "weather-mcp", version: "0.1.0" });
@@ -37,15 +51,7 @@ function createWeatherServer() {
     {
       description: "Get current weather for an explicitly confirmed place.",
       inputSchema: z.object({
-        place: z.object({
-          id: z.string().min(1),
-          name: z.string().min(1),
-          administrativeArea: z.string().min(1),
-          country: z.string().min(1),
-          latitude: z.number().min(-90).max(90),
-          longitude: z.number().min(-180).max(180),
-          timeZone: z.string().min(1),
-        }),
+        place: confirmedPlaceSchema,
         range: z.literal("current"),
       }),
     },
@@ -80,6 +86,53 @@ function createWeatherServer() {
           errorCategory: category,
         });
         throw new Error("当前天气暂时无法确认");
+      }
+    },
+  );
+
+  server.registerTool(
+    "daily_forecast",
+    {
+      description: "Get a daily forecast for an explicitly confirmed place.",
+      inputSchema: z.object({
+        place: confirmedPlaceSchema,
+        range: z.object({
+          type: z.literal("daily"),
+          days: z.number().int().min(1).max(7).default(7),
+        }),
+      }),
+    },
+    async ({ place, range }) => {
+      const requestId = randomUUID();
+      const startedAt = Date.now();
+
+      try {
+        const forecast = await getDailyForecast(place, range.days);
+        console.info({
+          requestId,
+          tool: "daily_forecast",
+          durationMs: Date.now() - startedAt,
+          status: "success",
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ forecast }),
+            },
+          ],
+        };
+      } catch (error) {
+        const category =
+          error instanceof WeatherProviderError ? error.category : "unavailable";
+        console.error({
+          requestId,
+          tool: "daily_forecast",
+          durationMs: Date.now() - startedAt,
+          status: "failed",
+          errorCategory: category,
+        });
+        throw new Error("每日预报暂时无法确认");
       }
     },
   );

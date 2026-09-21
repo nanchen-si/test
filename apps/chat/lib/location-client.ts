@@ -2,7 +2,12 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 
 import type { PlaceCandidate } from "./place";
 import { isPlaceCandidate } from "./place";
-import { isWeatherFact, type WeatherFact } from "./weather";
+import {
+  isDailyForecast,
+  isWeatherFact,
+  type DailyForecast,
+  type WeatherFact,
+} from "./weather";
 
 const weatherMcpUrl =
   process.env.WEATHER_MCP_URL ?? "http://127.0.0.1:3101/mcp";
@@ -69,6 +74,42 @@ export async function getCurrentWeather(
     }
 
     return (payload as { weather: WeatherFact }).weather;
+  } finally {
+    await client.close();
+  }
+}
+
+export async function getDailyForecast(
+  place: PlaceCandidate,
+  days: number,
+): Promise<DailyForecast> {
+  const client = new Client({ name: "weather-chat", version: "0.1.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(weatherMcpUrl));
+
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({
+      name: "daily_forecast",
+      arguments: {
+        place,
+        range: { type: "daily", days },
+      },
+    });
+    const text = result.content?.find((item) => item.type === "text")?.text;
+    if (!text) {
+      throw new Error("每日预报返回为空");
+    }
+
+    const payload: unknown = JSON.parse(text);
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      !isDailyForecast((payload as { forecast?: unknown }).forecast)
+    ) {
+      throw new Error("每日预报返回格式无效");
+    }
+
+    return (payload as { forecast: DailyForecast }).forecast;
   } finally {
     await client.close();
   }

@@ -1,11 +1,14 @@
 import {
   createDeepSeekClient,
+  extractForecastDays,
   extractPlaceQuery,
   isCurrentWeatherQuestion,
+  isDailyForecastQuestion,
   streamReply,
 } from "../../../lib/assistant";
 import {
   getCurrentWeather,
+  getDailyForecast,
   resolvePlace,
 } from "../../../lib/location-client";
 import {
@@ -103,6 +106,29 @@ async function streamCurrentWeather(
   return reply;
 }
 
+async function streamDailyForecast(
+  write: EventWriter,
+  place: NonNullable<ReturnType<typeof getSession>["confirmedPlace"]>,
+  days: number,
+  question?: string,
+): Promise<string> {
+  write("tool.start", { name: "daily_forecast" });
+  let forecast: Awaited<ReturnType<typeof getDailyForecast>>;
+  try {
+    forecast = await getDailyForecast(place, days);
+  } catch {
+    throw new WeatherQueryError("每日预报暂时无法确认");
+  }
+  write("tool.complete", { name: "daily_forecast" });
+  write("weather.forecast", { forecast: JSON.stringify(forecast) });
+  let reply = "";
+  for await (const delta of deepSeekClient.streamForecast(forecast, question)) {
+    reply += delta;
+    write("text.delta", { delta });
+  }
+  return reply;
+}
+
 const deepSeekClient = createDeepSeekClient();
 
 export async function POST(request: Request) {
@@ -143,6 +169,8 @@ export async function POST(request: Request) {
 
     session.pendingPlaces = [];
     session.confirmedPlace = selectedPlace;
+    const pendingWeatherRequest = session.pendingWeatherRequest;
+    session.pendingWeatherRequest = undefined;
     appendMessage(sessionId, {
       role: "user",
       content: `确认地点：${formatPlace(selectedPlace)}`,
@@ -153,7 +181,18 @@ export async function POST(request: Request) {
       write("place.confirmed", {
         place: JSON.stringify(selectedPlace),
       });
-      const reply = await streamCurrentWeather(write, selectedPlace, message);
+      const reply = pendingWeatherRequest?.type === "daily"
+        ? await streamDailyForecast(
+            write,
+            selectedPlace,
+            pendingWeatherRequest.days ?? 7,
+            pendingWeatherRequest.question,
+          )
+        : await streamCurrentWeather(
+            write,
+            selectedPlace,
+            pendingWeatherRequest?.question ?? message,
+          );
       appendMessage(sessionId, { role: "assistant", content: reply });
       write("message.complete", { message: reply });
     });
@@ -168,6 +207,13 @@ export async function POST(request: Request) {
       write("tool.start", { name: "resolve_place" });
       const candidates = await resolvePlace(placeQuery);
       session.pendingPlaces = candidates;
+      session.pendingWeatherRequest = candidates.length
+        ? {
+            type: isDailyForecastQuestion(message) ? "daily" : "current",
+            days: extractForecastDays(message) ?? undefined,
+            question: message,
+          }
+        : undefined;
       write("tool.complete", {
         name: "resolve_place",
         resultCount: String(candidates.length),
@@ -184,6 +230,30 @@ export async function POST(request: Request) {
           candidates: JSON.stringify(candidates),
         });
       }
+      write("message.complete", { message: reply });
+    });
+  }
+
+  if (isDailyForecastQuestion(message)) {
+    if (!session.confirmedPlace) {
+      return createSseResponse(async (write) => {
+        write("message.start", { sessionId });
+        const reply = "请先告诉我想查询的地点。";
+        await streamAssistantReply(write, reply);
+        appendMessage(sessionId, { role: "assistant", content: reply });
+        write("message.complete", { message: reply });
+      });
+    }
+
+    return createSseResponse(async (write) => {
+      write("message.start", { sessionId });
+      const reply = await streamDailyForecast(
+        write,
+        session.confirmedPlace!,
+        extractForecastDays(message) ?? 7,
+        message,
+      );
+      appendMessage(sessionId, { role: "assistant", content: reply });
       write("message.complete", { message: reply });
     });
   }

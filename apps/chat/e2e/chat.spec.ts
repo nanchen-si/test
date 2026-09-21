@@ -1,4 +1,30 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function getBeijingDate(page: Page, daysAhead: number) {
+  return page.evaluate((offset) => {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const parts = formatter.formatToParts(new Date());
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const date = new Date(
+      Date.UTC(
+        Number(values.year),
+        Number(values.month) - 1,
+        Number(values.day) + offset,
+        12,
+      ),
+    );
+    const nextParts = formatter.formatToParts(date);
+    const nextValues = Object.fromEntries(
+      nextParts.map((part) => [part.type, part.value]),
+    );
+    return `${nextValues.year}-${nextValues.month}-${nextValues.day}`;
+  }, daysAhead);
+}
 
 test("用户可以在浏览器中完成一轮中文普通对话", async ({ page }) => {
   await page.goto("/");
@@ -125,4 +151,57 @@ test("确认地点后可以省略地点继续询问当前天气", async ({ page 
   await expect(
     page.getByText("北京市, 北京市, 中国当前天气：18°C，晴", { exact: false }),
   ).toHaveCount(2);
+});
+
+test("确认地点后可以查询未来三天预报并复用地点追问", async ({ page }) => {
+  await page.goto("/");
+
+  await page
+    .getByRole("textbox", { name: "消息" })
+    .fill("北京未来三天预报");
+  await page.getByRole("button", { name: "发送" }).click();
+  await page.getByRole("button", { name: "北京市, 北京市, 中国" }).click();
+
+  const tomorrow = await getBeijingDate(page, 1);
+  const thirdForecastDate = await getBeijingDate(page, 3);
+  await expect(page.getByText("北京市, 北京市, 中国未来3天预报", { exact: false }))
+    .toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("已完成", { timeout: 20_000 });
+  await expect(page.getByText(tomorrow, { exact: false })).toBeVisible();
+  await expect(page.getByText(thirdForecastDate, { exact: false })).toBeVisible();
+
+  await page.getByRole("textbox", { name: "消息" }).fill("那明天呢");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  await expect(page.getByText("北京市, 北京市, 中国未来1天预报", { exact: false }))
+    .toBeVisible();
+});
+
+test("每日预报未指定范围时默认返回未来七天", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("textbox", { name: "消息" }).fill("北京天气预报");
+  await page.getByRole("button", { name: "发送" }).click();
+  await page.getByRole("button", { name: "北京市, 北京市, 中国" }).click();
+
+  const seventhForecastDate = await getBeijingDate(page, 7);
+  await expect(page.getByText("北京市, 北京市, 中国未来7天预报", { exact: false }))
+    .toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("已完成", { timeout: 20_000 });
+  await expect(page.getByText(seventhForecastDate, { exact: false })).toBeVisible();
+});
+
+test("刷新后不会继续使用已确认地点查询预报", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("textbox", { name: "消息" }).fill("北京天气");
+  await page.getByRole("button", { name: "发送" }).click();
+  await page.getByRole("button", { name: "北京市, 北京市, 中国" }).click();
+  await expect(page.getByText("当前已确认地点：北京市, 北京市, 中国")).toBeVisible();
+
+  await page.reload();
+  await page.getByRole("textbox", { name: "消息" }).fill("那明天呢");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  await expect(page.getByText("请先告诉我想查询的地点。")).toBeVisible();
 });

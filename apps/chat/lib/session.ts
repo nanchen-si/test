@@ -8,6 +8,11 @@ export type ChatMessage = {
 export type ConversationSession = {
   messages: ChatMessage[];
   pendingPlaces: PlaceCandidate[];
+  pendingWeatherRequest?: {
+    type: "current" | "daily";
+    days?: number;
+    question: string;
+  };
   confirmedPlace?: PlaceCandidate;
 };
 
