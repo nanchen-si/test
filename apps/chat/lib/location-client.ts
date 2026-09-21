@@ -12,109 +12,162 @@ import {
 const weatherMcpUrl =
   process.env.WEATHER_MCP_URL ?? "http://127.0.0.1:3101/mcp";
 
-export async function resolvePlace(query: string): Promise<PlaceCandidate[]> {
-  const client = new Client({ name: "weather-chat", version: "0.1.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(weatherMcpUrl));
+export type WeatherServiceErrorCategory =
+  | "mcp_unavailable"
+  | "configuration"
+  | "timeout"
+  | "unauthorized"
+  | "unavailable"
+  | "invalid_data";
 
-  await client.connect(transport);
-  try {
-    const result = await client.callTool({
-      name: "resolve_place",
-      arguments: { query },
-    });
-    const text = result.content?.find((item) => item.type === "text")?.text;
-    if (!text) {
-      throw new Error("地点解析返回为空");
-    }
-
-    const payload: unknown = JSON.parse(text);
-    if (
-      !payload ||
-      typeof payload !== "object" ||
-      !Array.isArray((payload as { candidates?: unknown }).candidates)
-    ) {
-      throw new Error("地点解析返回格式无效");
-    }
-
-    const candidates = (payload as { candidates: unknown[] }).candidates;
-    if (!candidates.every(isPlaceCandidate)) {
-      throw new Error("地点候选格式无效");
-    }
-
-    return candidates;
-  } finally {
-    await client.close();
+export class WeatherServiceError extends Error {
+  constructor(public readonly category: WeatherServiceErrorCategory) {
+    super("Weather service request failed");
+    this.name = "WeatherServiceError";
   }
 }
 
-export async function resolveCoordinates(
+export type WeatherMcpFailureMode = WeatherServiceErrorCategory;
+
+export type WeatherMcpRequestOptions = {
+  failureMode?: WeatherMcpFailureMode;
+};
+
+function createTransport(options?: WeatherMcpRequestOptions) {
+  return new StreamableHTTPClientTransport(new URL(weatherMcpUrl), {
+    requestInit: options?.failureMode
+      ? { headers: { "x-weather-mcp-failure": options.failureMode } }
+      : undefined,
+  });
+}
+
+function parseErrorCategory(text: string): WeatherServiceErrorCategory {
+  const category = text.match(/^WEATHER_PROVIDER_ERROR:(\w+)$/u)?.[1];
+  if (
+    category === "configuration" ||
+    category === "timeout" ||
+    category === "unauthorized" ||
+    category === "unavailable" ||
+    category === "invalid_data"
+  ) {
+    return category;
+  }
+
+  return "unavailable";
+}
+
+async function callWeatherTool<T>(
+  name: string,
+  args: Record<string, unknown>,
+  parse: (text: string) => T,
+  options?: WeatherMcpRequestOptions,
+): Promise<T> {
+  const client = new Client({ name: "weather-chat", version: "0.1.0" });
+  const transport = createTransport(options);
+
+  try {
+    await client.connect(transport);
+    const result = await client.callTool({ name, arguments: args });
+    const text = result.content?.find((item) => item.type === "text")?.text;
+    if (result.isError) {
+      throw new WeatherServiceError(
+        text ? parseErrorCategory(text) : "unavailable",
+      );
+    }
+    if (!text) {
+      throw new WeatherServiceError("invalid_data");
+    }
+
+    return parse(text);
+  } catch (error) {
+    if (error instanceof WeatherServiceError) {
+      throw error;
+    }
+
+    throw new WeatherServiceError("mcp_unavailable");
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+function parseCandidates(text: string): PlaceCandidate[] {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new WeatherServiceError("invalid_data");
+  }
+
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    !Array.isArray((payload as { candidates?: unknown }).candidates)
+  ) {
+    throw new WeatherServiceError("invalid_data");
+  }
+
+  const candidates = (payload as { candidates: unknown[] }).candidates;
+  if (!candidates.every(isPlaceCandidate)) {
+    throw new WeatherServiceError("invalid_data");
+  }
+
+  return candidates;
+}
+
+export function resolvePlace(
+  query: string,
+  options?: WeatherMcpRequestOptions,
+): Promise<PlaceCandidate[]> {
+  return callWeatherTool(
+    "resolve_place",
+    { query },
+    parseCandidates,
+    options,
+  );
+}
+
+export function resolveCoordinates(
   latitude: number,
   longitude: number,
+  options?: WeatherMcpRequestOptions,
 ): Promise<PlaceCandidate[]> {
-  const client = new Client({ name: "weather-chat", version: "0.1.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(weatherMcpUrl));
-
-  await client.connect(transport);
-  try {
-    const result = await client.callTool({
-      name: "resolve_coordinates",
-      arguments: { latitude, longitude },
-    });
-    const text = result.content?.find((item) => item.type === "text")?.text;
-    if (!text) {
-      throw new Error("坐标解析返回为空");
-    }
-
-    const payload: unknown = JSON.parse(text);
-    if (
-      !payload ||
-      typeof payload !== "object" ||
-      !Array.isArray((payload as { candidates?: unknown }).candidates)
-    ) {
-      throw new Error("坐标解析返回格式无效");
-    }
-
-    const candidates = (payload as { candidates: unknown[] }).candidates;
-    if (!candidates.every(isPlaceCandidate)) {
-      throw new Error("地点候选格式无效");
-    }
-
-    return candidates;
-  } finally {
-    await client.close();
-  }
+  return callWeatherTool(
+    "resolve_coordinates",
+    { latitude, longitude },
+    parseCandidates,
+    options,
+  );
 }
 
-export async function getCurrentWeather(
-  place: PlaceCandidate,
-): Promise<WeatherFact> {
-  const client = new Client({ name: "weather-chat", version: "0.1.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(weatherMcpUrl));
-
-  await client.connect(transport);
+function parseWeather(text: string): WeatherFact {
+  let payload: unknown;
   try {
-    const result = await client.callTool({
-      name: "current_weather",
-      arguments: { place, range: "current" },
-    });
-    const text = result.content?.find((item) => item.type === "text")?.text;
-    if (!text) {
-      throw new Error("当前天气返回为空");
-    }
-
-    const payload: unknown = JSON.parse(text);
-    if (
-      !payload ||
-      typeof payload !== "object" ||
-      !isWeatherFact((payload as { weather?: unknown }).weather)
-    ) {
-      throw new Error("当前天气返回格式无效");
-    }
-
-    return (payload as { weather: WeatherFact }).weather;
-  } finally {
-    await client.close();
+    payload = JSON.parse(text);
+  } catch {
+    throw new WeatherServiceError("invalid_data");
   }
+
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    !isWeatherFact((payload as { weather?: unknown }).weather)
+  ) {
+    throw new WeatherServiceError("invalid_data");
+  }
+
+  return (payload as { weather: WeatherFact }).weather;
+}
+
+export function getCurrentWeather(
+  place: PlaceCandidate,
+  options?: WeatherMcpRequestOptions,
+): Promise<WeatherFact> {
+  return callWeatherTool(
+    "current_weather",
+    { place, range: "current" },
+    parseWeather,
+    options,
+  );
 }
 
 export async function getDailyForecast(
@@ -122,44 +175,41 @@ export async function getDailyForecast(
   days: number,
   startDaysAhead = 1,
   targetDate?: string,
+  options?: WeatherMcpRequestOptions,
 ): Promise<DailyForecast> {
-  const client = new Client({ name: "weather-chat", version: "0.1.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(weatherMcpUrl));
+  return callWeatherTool(
+    "daily_forecast",
+    { place, range: { type: "daily", days, startDaysAhead, targetDate } },
+    parseForecast,
+    options,
+  );
+}
 
-  await client.connect(transport);
+function parseForecast(text: string): DailyForecast {
+  let payload: unknown;
   try {
-    const result = await client.callTool({
-      name: "daily_forecast",
-      arguments: {
-        place,
-        range: { type: "daily", days, startDaysAhead, targetDate },
-      },
-    });
-    const text = result.content?.find((item) => item.type === "text")?.text;
-    if (!text) {
-      throw new Error("每日预报返回为空");
-    }
-
-    const payload: unknown = JSON.parse(text);
-    if (
-      !payload ||
-      typeof payload !== "object" ||
-      !isDailyForecast((payload as { forecast?: unknown }).forecast)
-    ) {
-      throw new Error("每日预报返回格式无效");
-    }
-
-    return (payload as { forecast: DailyForecast }).forecast;
-  } finally {
-    await client.close();
+    payload = JSON.parse(text);
+  } catch {
+    throw new WeatherServiceError("invalid_data");
   }
+
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    !isDailyForecast((payload as { forecast?: unknown }).forecast)
+  ) {
+    throw new WeatherServiceError("invalid_data");
+  }
+
+  return (payload as { forecast: DailyForecast }).forecast;
 }
 
 export async function getDailyForecastDay(
   place: PlaceCandidate,
   targetDate: string,
+  options?: WeatherMcpRequestOptions,
 ): Promise<DailyForecast> {
-  const forecast = await getDailyForecast(place, 1, 1, targetDate);
+  const forecast = await getDailyForecast(place, 1, 1, targetDate, options);
   const day = forecast.days[0];
   if (!day) {
     throw new Error("每日预报缺少目标日期");

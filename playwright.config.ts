@@ -12,14 +12,20 @@ export default defineConfig({
   webServer: [
     {
       command: "npm run dev --workspace @weather-assistant/weather-mcp",
-      env: { WEATHER_MCP_DATA_SOURCE: "fixture" },
+      env: {
+        WEATHER_MCP_DATA_SOURCE: "fixture",
+        WEATHER_MCP_FAILURE_TEST_MODE: "1",
+      },
       url: "http://127.0.0.1:3101/health",
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
     },
     {
       command: "npm run dev --workspace @weather-assistant/chat",
-      env: { DEEPSEEK_API_KEY: "" },
+      env: {
+        DEEPSEEK_API_KEY: "",
+        WEATHER_MCP_FAILURE_TEST_MODE: "1",
+      },
       url: "http://127.0.0.1:3000",
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,

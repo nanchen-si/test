@@ -81,6 +81,7 @@ export function isDailyForecast(value: unknown): value is DailyForecast {
     typeof forecast.timeZone === "string" &&
     typeof forecast.source === "string" &&
     Array.isArray(forecast.days) &&
+    forecast.days.length > 0 &&
     forecast.days.every((day) => {
       if (!day || typeof day !== "object") {
         return false;

@@ -9,11 +9,36 @@ import { resolveCoordinates, resolvePlaces } from "./places.js";
 import {
   getCurrentWeather,
   getDailyForecast,
+  type WeatherErrorCategory,
+  type WeatherFailureMode,
   WeatherProviderError,
 } from "./weather.js";
 
 const host = process.env.WEATHER_MCP_HOST ?? "127.0.0.1";
 const port = Number(process.env.WEATHER_MCP_PORT ?? 3101);
+
+type FailureMode = WeatherFailureMode | "mcp_unavailable";
+
+function readFailureMode(request: import("node:http").IncomingMessage): FailureMode | undefined {
+  if (process.env.WEATHER_MCP_FAILURE_TEST_MODE !== "1") {
+    return undefined;
+  }
+
+  const value = request.headers["x-weather-mcp-failure"];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const modes: FailureMode[] = [
+    "mcp_unavailable",
+    "configuration",
+    "timeout",
+    "unauthorized",
+    "unavailable",
+    "invalid_data",
+  ];
+  return modes.includes(value as FailureMode) ? value as FailureMode : undefined;
+}
 
 const confirmedPlaceSchema = z.object({
   id: z.string().min(1),
@@ -25,7 +50,7 @@ const confirmedPlaceSchema = z.object({
   timeZone: z.string().min(1),
 });
 
-function createWeatherServer() {
+function createWeatherServer(failureMode?: FailureMode) {
   const server = new McpServer({ name: "weather-mcp", version: "0.1.0" });
 
   server.registerTool(
@@ -79,7 +104,10 @@ function createWeatherServer() {
       const startedAt = Date.now();
 
       try {
-        const weather = await getCurrentWeather(place);
+        const weather = await getCurrentWeather(
+          place,
+          failureMode === "mcp_unavailable" ? undefined : failureMode,
+        );
         console.info({
           requestId,
           tool: "current_weather",
@@ -104,7 +132,7 @@ function createWeatherServer() {
           status: "failed",
           errorCategory: category,
         });
-        throw new Error("当前天气暂时无法确认");
+        throw new Error(`WEATHER_PROVIDER_ERROR:${category}`);
       }
     },
   );
@@ -133,6 +161,7 @@ function createWeatherServer() {
           range.days,
           range.startDaysAhead,
           range.targetDate,
+          failureMode === "mcp_unavailable" ? undefined : failureMode,
         );
         console.info({
           requestId,
@@ -158,7 +187,7 @@ function createWeatherServer() {
           status: "failed",
           errorCategory: category,
         });
-        throw new Error("每日预报暂时无法确认");
+        throw new Error(`WEATHER_PROVIDER_ERROR:${category}`);
       }
     },
   );
@@ -179,7 +208,14 @@ const httpServer = createServer(async (request, response) => {
     return;
   }
 
-  const server = createWeatherServer();
+  const failureMode = readFailureMode(request);
+  if (failureMode === "mcp_unavailable") {
+    response.writeHead(503, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: "Weather MCP unavailable" }));
+    return;
+  }
+
+  const server = createWeatherServer(failureMode);
   const transport = new NodeStreamableHTTPServerTransport({
     enableJsonResponse: true,
     sessionIdGenerator: undefined,

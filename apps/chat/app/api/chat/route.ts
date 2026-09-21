@@ -15,6 +15,9 @@ import {
   getDailyForecastDay,
   resolveCoordinates,
   resolvePlace,
+  WeatherServiceError,
+  type WeatherMcpFailureMode,
+  type WeatherMcpRequestOptions,
 } from "../../../lib/location-client";
 import {
   formatPlace,
@@ -39,6 +42,43 @@ type EventWriter = (
 ) => void;
 
 class WeatherQueryError extends Error {}
+
+function weatherServiceErrorMessage(
+  category: WeatherServiceError["category"],
+): string {
+  switch (category) {
+    case "mcp_unavailable":
+      return "天气服务当前不可用，请稍后重试。";
+    case "timeout":
+      return "天气服务请求超时，请稍后重试。";
+    case "unauthorized":
+    case "configuration":
+      return "天气服务认证或配置异常，暂时无法确认天气。";
+    case "invalid_data":
+      return "天气服务返回的数据不完整，暂时无法确认天气。";
+    case "unavailable":
+      return "天气服务暂时不可用，请稍后重试。";
+  }
+}
+
+function readTestFailureMode(request: Request): WeatherMcpFailureMode | undefined {
+  if (process.env.WEATHER_MCP_FAILURE_TEST_MODE !== "1") {
+    return undefined;
+  }
+
+  const value = request.headers.get("x-weather-mcp-failure");
+  const modes: WeatherMcpFailureMode[] = [
+    "mcp_unavailable",
+    "configuration",
+    "timeout",
+    "unauthorized",
+    "unavailable",
+    "invalid_data",
+  ];
+  return value && modes.includes(value as WeatherMcpFailureMode)
+    ? value as WeatherMcpFailureMode
+    : undefined;
+}
 
 function writeEvent(
   controller: ReadableStreamDefaultController<Uint8Array>,
@@ -66,6 +106,8 @@ function createSseResponse(run: (write: EventWriter) => Promise<void>): Response
           message:
             error instanceof WeatherQueryError
               ? error.message
+              : error instanceof WeatherServiceError
+                ? weatherServiceErrorMessage(error.category)
               : "聊天请求失败",
         });
         controller.close();
@@ -95,12 +137,16 @@ async function streamCurrentWeather(
   write: EventWriter,
   place: NonNullable<ReturnType<typeof getSession>["confirmedPlace"]>,
   question?: string,
+  options?: WeatherMcpRequestOptions,
 ): Promise<string> {
   write("tool.start", { name: "current_weather" });
   let weather: Awaited<ReturnType<typeof getCurrentWeather>>;
   try {
-    weather = await getCurrentWeather(place);
-  } catch {
+    weather = await getCurrentWeather(place, options);
+  } catch (error) {
+    if (error instanceof WeatherServiceError) {
+      throw error;
+    }
     throw new WeatherQueryError("当前天气暂时无法确认");
   }
   write("tool.complete", { name: "current_weather" });
@@ -118,12 +164,16 @@ async function streamDailyForecast(
   place: NonNullable<ReturnType<typeof getSession>["confirmedPlace"]>,
   days: number,
   question?: string,
+  options?: WeatherMcpRequestOptions,
 ): Promise<string> {
   write("tool.start", { name: "daily_forecast" });
   let forecast: Awaited<ReturnType<typeof getDailyForecast>>;
   try {
-    forecast = await getDailyForecast(place, days);
-  } catch {
+    forecast = await getDailyForecast(place, days, 1, undefined, options);
+  } catch (error) {
+    if (error instanceof WeatherServiceError) {
+      throw error;
+    }
     throw new WeatherQueryError("每日预报暂时无法确认");
   }
   write("tool.complete", { name: "daily_forecast" });
@@ -141,12 +191,13 @@ async function streamWeatherComparison(
   places: NonNullable<ReturnType<typeof getSession>["confirmedPlace"]>[],
   targetDate: string,
   question?: string,
+  options?: WeatherMcpRequestOptions,
 ): Promise<string> {
   write("tool.start", { name: "daily_forecast" });
   let comparison: WeatherComparison;
   try {
     const forecasts = await Promise.all(
-      places.map((place) => getDailyForecastDay(place, targetDate)),
+      places.map((place) => getDailyForecastDay(place, targetDate, options)),
     );
     if (
       forecasts.some((forecast) => forecast.days[0]?.date !== targetDate)
@@ -154,7 +205,10 @@ async function streamWeatherComparison(
       throw new Error("地点预报的本地日期不一致");
     }
     comparison = { forecasts };
-  } catch {
+  } catch (error) {
+    if (error instanceof WeatherServiceError) {
+      throw error;
+    }
     throw new WeatherQueryError("同日天气暂时无法确认");
   }
   write("tool.complete", { name: "daily_forecast" });
@@ -219,6 +273,8 @@ export async function POST(request: Request) {
   const sessionId = body.sessionId;
   const message = body.message.trim();
   const session = getSession(sessionId);
+  const failureMode = readTestFailureMode(request);
+  const weatherMcpOptions = failureMode ? { failureMode } : undefined;
 
   if (body.location !== undefined) {
     const location = body.location;
@@ -245,7 +301,11 @@ export async function POST(request: Request) {
     return createSseResponse(async (write) => {
       write("message.start", { sessionId });
       write("tool.start", { name: "resolve_coordinates" });
-      const candidates = await resolveCoordinates(latitude, longitude);
+      const candidates = await resolveCoordinates(
+        latitude,
+        longitude,
+        weatherMcpOptions,
+      );
       session.pendingPlaces = candidates;
       session.pendingWeatherRequest = candidates.length
         ? { type: "current", question: message }
@@ -327,6 +387,7 @@ export async function POST(request: Request) {
             confirmedPlaces,
             targetDate,
             pendingWeatherComparison.question,
+            weatherMcpOptions,
           );
         } else {
           reply = `已确认${formatPlace(selectedPlace)}，请再选择另一个地点。`;
@@ -365,11 +426,13 @@ export async function POST(request: Request) {
             selectedPlace,
             pendingWeatherRequest.days ?? 7,
             pendingWeatherRequest.question,
+            weatherMcpOptions,
           )
         : await streamCurrentWeather(
             write,
             selectedPlace,
             pendingWeatherRequest?.question ?? message,
+            weatherMcpOptions,
           );
       appendMessage(sessionId, { role: "assistant", content: reply });
       write("message.complete", { message: reply });
@@ -396,7 +459,7 @@ export async function POST(request: Request) {
       write("message.start", { sessionId });
       write("tool.start", { name: "resolve_place" });
       const [firstCandidates, secondCandidates] = await Promise.all(
-        comparisonQueries.map((query) => resolvePlace(query)),
+        comparisonQueries.map((query) => resolvePlace(query, weatherMcpOptions)),
       );
       const places = [
         { query: comparisonQueries[0], candidates: firstCandidates },
@@ -434,7 +497,7 @@ export async function POST(request: Request) {
     return createSseResponse(async (write) => {
       write("message.start", { sessionId });
       write("tool.start", { name: "resolve_place" });
-      const candidates = await resolvePlace(placeQuery);
+      const candidates = await resolvePlace(placeQuery, weatherMcpOptions);
       session.pendingPlaces = candidates;
       session.pendingWeatherRequest = candidates.length
         ? {
@@ -481,6 +544,7 @@ export async function POST(request: Request) {
         session.confirmedPlace!,
         extractForecastDays(message) ?? 7,
         message,
+        weatherMcpOptions,
       );
       appendMessage(sessionId, { role: "assistant", content: reply });
       write("message.complete", { message: reply });
@@ -504,6 +568,7 @@ export async function POST(request: Request) {
         write,
         session.confirmedPlace!,
         message,
+        weatherMcpOptions,
       );
       appendMessage(sessionId, { role: "assistant", content: reply });
       write("message.complete", { message: reply });

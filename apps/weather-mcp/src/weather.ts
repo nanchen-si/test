@@ -41,9 +41,12 @@ export type DailyForecast = {
 
 export type WeatherErrorCategory =
   | "configuration"
+  | "timeout"
   | "unauthorized"
   | "unavailable"
   | "invalid_data";
+
+export type WeatherFailureMode = WeatherErrorCategory;
 
 export class WeatherProviderError extends Error {
   constructor(
@@ -382,20 +385,40 @@ async function fetchQWeather(place: PlaceCandidate): Promise<WeatherFact> {
           signal: controller.signal,
         },
       );
-      if (dailyResponse.ok) {
-        const dailyPayload = await dailyResponse.json();
-        const daily = qWeatherDailyResponseSchema.safeParse(dailyPayload);
-        const firstDay = daily.success ? daily.data.days[0] : undefined;
-        const probabilities = [
-          firstDay?.daytime?.precipitation?.probability,
-          firstDay?.nighttime?.precipitation?.probability,
-        ].filter((value): value is number => value !== undefined);
-        if (probabilities.length > 0) {
-          precipitationProbability = Math.round(Math.max(...probabilities) * 100);
-        }
+      if (!dailyResponse.ok) {
+        throw new WeatherProviderError(
+          dailyResponse.status === 401 || dailyResponse.status === 403
+            ? "unauthorized"
+            : "unavailable",
+          `QWeather returned HTTP ${dailyResponse.status}`,
+        );
       }
-    } catch {
-      precipitationProbability = undefined;
+      let dailyPayload: unknown;
+      try {
+        dailyPayload = await dailyResponse.json();
+      } catch {
+        throw new WeatherProviderError("invalid_data", "QWeather response is not JSON");
+      }
+      const daily = qWeatherDailyResponseSchema.safeParse(dailyPayload);
+      const firstDay = daily.success ? daily.data.days[0] : undefined;
+      if (!daily.success || !firstDay) {
+        throw new WeatherProviderError("invalid_data", "QWeather forecast is incomplete");
+      }
+      const probabilities = [
+        firstDay.daytime?.precipitation?.probability,
+        firstDay.nighttime?.precipitation?.probability,
+      ].filter((value): value is number => value !== undefined);
+      if (probabilities.length > 0) {
+        precipitationProbability = Math.round(Math.max(...probabilities) * 100);
+      }
+    } catch (error) {
+      if (error instanceof WeatherProviderError) {
+        throw error;
+      }
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new WeatherProviderError("timeout", "QWeather request timed out");
+      }
+      throw new WeatherProviderError("unavailable", "QWeather request failed");
     }
 
     return {
@@ -416,6 +439,10 @@ async function fetchQWeather(place: PlaceCandidate): Promise<WeatherFact> {
   } catch (error) {
     if (error instanceof WeatherProviderError) {
       throw error;
+    }
+
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new WeatherProviderError("timeout", "QWeather request timed out");
     }
 
     throw new WeatherProviderError("unavailable", "QWeather request failed");
@@ -583,6 +610,10 @@ async function fetchQWeatherDaily(
       throw error;
     }
 
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new WeatherProviderError("timeout", "QWeather forecast timed out");
+    }
+
     throw new WeatherProviderError("unavailable", "QWeather forecast request failed");
   } finally {
     clearTimeout(timeout);
@@ -635,7 +666,14 @@ function getFixtureDailyForecast(
   };
 }
 
-export async function getCurrentWeather(place: PlaceCandidate): Promise<WeatherFact> {
+export async function getCurrentWeather(
+  place: PlaceCandidate,
+  failureMode?: WeatherFailureMode,
+): Promise<WeatherFact> {
+  if (failureMode) {
+    throw new WeatherProviderError(failureMode, "deterministic provider failure");
+  }
+
   const dataSource =
     process.env.WEATHER_MCP_DATA_SOURCE ??
     (process.env.QWEATHER_API_HOST ? "qweather" : "fixture");
@@ -666,7 +704,12 @@ export async function getDailyForecast(
   days = 7,
   startDaysAhead = 1,
   targetDate?: string,
+  failureMode?: WeatherFailureMode,
 ): Promise<DailyForecast> {
+  if (failureMode) {
+    throw new WeatherProviderError(failureMode, "deterministic provider failure");
+  }
+
   const requestedDays = Math.min(Math.max(Math.trunc(days), 1), 7);
   const requestedStartDaysAhead = Math.min(
     Math.max(Math.trunc(startDaysAhead), 0),

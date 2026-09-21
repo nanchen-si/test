@@ -26,6 +26,17 @@ async function getBeijingDate(page: Page, daysAhead: number) {
   }, daysAhead);
 }
 
+async function forceMcpFailure(page: Page, mode: string) {
+  await page.route("**/api/chat", async (route) => {
+    await route.continue({
+      headers: {
+        ...route.request().headers(),
+        "x-weather-mcp-failure": mode,
+      },
+    });
+  });
+}
+
 test("用户可以在浏览器中完成一轮中文普通对话", async ({ page }) => {
   await page.goto("/");
 
@@ -276,3 +287,54 @@ test("可以比较两个地点同一天的每日天气", async ({ page }) => {
   await expect(page.getByText("晴", { exact: false })).toBeVisible();
   await expect(page.getByText("多云", { exact: false })).toBeVisible();
 });
+
+test("Weather MCP 不可用时显示明确错误并结束请求", async ({ page }) => {
+  await page.goto("/");
+  await forceMcpFailure(page, "mcp_unavailable");
+
+  await page.getByRole("textbox", { name: "消息" }).fill("北京天气");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  await expect(page.getByText("天气服务当前不可用，请稍后重试。"))
+    .toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("发生错误");
+  await expect(page.getByRole("button", { name: "使用我的位置" }))
+    .toBeEnabled();
+  await expect(page.getByText("北京市, 北京市, 中国当前天气：", { exact: false }))
+    .toHaveCount(0);
+});
+
+for (const failure of [
+  {
+    mode: "timeout",
+    label: "超时",
+    message: "天气服务请求超时，请稍后重试。",
+  },
+  {
+    mode: "unauthorized",
+    label: "认证失败",
+    message: "天气服务认证或配置异常，暂时无法确认天气。",
+  },
+  {
+    mode: "invalid_data",
+    label: "数据不完整",
+    message: "天气服务返回的数据不完整，暂时无法确认天气。",
+  },
+]) {
+  test(`天气源${failure.label}时不生成伪造天气`, async ({ page }) => {
+    await page.goto("/");
+    await forceMcpFailure(page, failure.mode);
+
+    await page.getByRole("textbox", { name: "消息" }).fill("北京天气");
+    await page.getByRole("button", { name: "发送" }).click();
+    await page.getByRole("button", { name: "北京市, 北京市, 中国" }).click();
+
+    await expect(page.getByText(failure.message)).toBeVisible();
+    await expect(page.getByRole("status")).toHaveText("发生错误");
+    await expect(page.getByRole("button", { name: "使用我的位置" }))
+      .toBeEnabled();
+    await expect(
+      page.getByText("北京市, 北京市, 中国当前天气：", { exact: false }),
+    ).toHaveCount(0);
+  });
+}
