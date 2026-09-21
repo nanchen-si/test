@@ -2,7 +2,7 @@
   "name": "@weather-assistant/chat",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node --env-file=../../.env ../../node_modules/next/dist/bin/next dev",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit"

@@ -10,17 +10,17 @@ npm install
 
 ## 本地启动
 
+首次使用前，打开根目录的 `.env`，按需填写密钥。默认配置使用本地模拟天气，不填写任何密钥也可以运行。
+
 在第一个终端启动 Weather MCP：
 
 ```powershell
-$env:WEATHER_MCP_DATA_SOURCE = "fixture"
 npm run dev:mcp
 ```
 
 在第二个终端启动聊天应用：
 
 ```powershell
-$env:DEEPSEEK_API_KEY = ""
 npm run dev
 ```
 
@@ -28,15 +28,9 @@ npm run dev
 
 ## 使用和风天气
 
-将 Weather MCP 的数据源切换为 `qweather`，并只在后端终端设置以下环境变量：
+将 `.env` 中的 `WEATHER_MCP_DATA_SOURCE` 改为 `qweather`，并填写以下变量：
 
 ```powershell
-$env:WEATHER_MCP_DATA_SOURCE = "qweather"
-$env:QWEATHER_KEY_ID = "..."
-$env:QWEATHER_DEVELOPER_ID = "..."
-$env:QWEATHER_PROJECT_ID = "..."
-$env:QWEATHER_PRIVATE_KEY = "..."
-$env:QWEATHER_API_HOST = "https://..."
 npm run dev:mcp
 ```
 

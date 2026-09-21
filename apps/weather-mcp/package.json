@@ -2,7 +2,7 @@
   "name": "@weather-assistant/weather-mcp",
   "private": true,
   "scripts": {
-    "dev": "tsx src/server.ts",
+    "dev": "node --env-file=../../.env ../../node_modules/tsx/dist/cli.mjs src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
