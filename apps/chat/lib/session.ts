@@ -13,6 +13,16 @@ export type ConversationSession = {
     days?: number;
     question: string;
   };
+  pendingWeatherComparison?: {
+    targetDate?: string;
+    daysAhead?: number;
+    question: string;
+    places: Array<{
+      query: string;
+      candidates: PlaceCandidate[];
+      confirmedPlace?: PlaceCandidate;
+    }>;
+  };
   confirmedPlace?: PlaceCandidate;
 };
 

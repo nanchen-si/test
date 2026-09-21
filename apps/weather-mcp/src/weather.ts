@@ -79,6 +79,29 @@ const FIXTURE_WEATHER: Record<string, WeatherFact> = {
     windSpeedMps: 2.5,
     source: "deterministic-weather-fixture",
   },
+  "cn-shanghai": {
+    place: {
+      id: "cn-shanghai",
+      name: "上海市",
+      administrativeArea: "上海市",
+      country: "中国",
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timeZone: "Asia/Shanghai",
+    },
+    dataTime: "2026-01-15T00:00:00.000Z",
+    dataTimeSource: "provider",
+    timeZone: "Asia/Shanghai",
+    temperatureC: 15,
+    feelsLikeC: 14,
+    condition: "多云",
+    precipitationProbability: 30,
+    precipitationMm: 0.2,
+    precipitationType: "rain",
+    windDirection: "东风",
+    windSpeedMps: 3.1,
+    source: "deterministic-weather-fixture",
+  },
   "us-springfield-il": {
     place: {
       id: "us-springfield-il",
@@ -431,9 +454,26 @@ function getFutureLocalDate(timeZone: string, daysAhead: number): string {
   return formatLocalDate(date.toISOString(), timeZone);
 }
 
+function addCalendarDays(dateText: string, daysAhead: number): string {
+  const date = new Date(`${dateText}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + daysAhead);
+  return date.toISOString().slice(0, 10);
+}
+
+function getDaysBetween(startDate: string, targetDate: string): number {
+  const start = new Date(`${startDate}T12:00:00Z`).valueOf();
+  const target = new Date(`${targetDate}T12:00:00Z`).valueOf();
+  if (Number.isNaN(start) || Number.isNaN(target)) {
+    return Number.NaN;
+  }
+  return Math.round((target - start) / 86_400_000);
+}
+
 async function fetchQWeatherDaily(
   place: PlaceCandidate,
   days: number,
+  startDaysAhead: number,
+  targetDate?: string,
 ): Promise<DailyForecast> {
   const apiHost = process.env.QWEATHER_API_HOST?.replace(/\/$/u, "");
   if (!apiHost) {
@@ -443,7 +483,17 @@ async function fetchQWeatherDaily(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
   const requestedDays = Math.min(Math.max(Math.trunc(days), 1), 7);
-  const providerDays = requestedDays + 1;
+  const requestedStartDaysAhead = targetDate
+    ? getDaysBetween(formatLocalDate(new Date().toISOString(), place.timeZone), targetDate)
+    : Math.min(Math.max(Math.trunc(startDaysAhead), 0), 7);
+  if (
+    !Number.isInteger(requestedStartDaysAhead) ||
+    requestedStartDaysAhead < 0 ||
+    requestedStartDaysAhead > 7
+  ) {
+    throw new WeatherProviderError("invalid_data", "目标日期不在每日预报范围内");
+  }
+  const providerDays = requestedDays + requestedStartDaysAhead;
 
   try {
     const response = await fetch(
@@ -478,41 +528,49 @@ async function fetchQWeatherDaily(
       throw new WeatherProviderError("invalid_data", "QWeather forecast is incomplete");
     }
 
-    const forecastDays = parsed.data.days.slice(1, providerDays).map((day) => {
-      const daytime = day.daytime;
-      const nighttime = day.nighttime;
-      if (!daytime && !nighttime) {
-        throw new WeatherProviderError("invalid_data", "QWeather forecast day is incomplete");
-      }
-      const selectedPeriod = daytime ?? nighttime;
-      if (!selectedPeriod) {
-        throw new WeatherProviderError("invalid_data", "QWeather forecast day is incomplete");
-      }
-      const periods = [daytime, nighttime].filter(
-        (period): period is NonNullable<typeof daytime> => period !== undefined,
-      );
-      const probabilities = periods
-        .map((period) => period.precipitation?.probability)
-        .filter((value): value is number => value !== undefined);
-      const amounts = periods
-        .map((period) => period.precipitation?.amount?.value)
-        .filter((value): value is number => value !== undefined);
-      return {
-        date: formatLocalDate(day.forecastStartTime, place.timeZone),
-        condition: selectedPeriod.condition.text,
-        temperatureMinC: day.temperatureMin.value,
-        temperatureMaxC: day.temperatureMax.value,
-        precipitationProbability:
-          probabilities.length > 0
-            ? Math.round(Math.max(...probabilities) * 100)
-            : undefined,
-        precipitationMm: amounts.length > 0 ? Math.max(...amounts) : undefined,
-        precipitationType:
-          daytime?.precipitation?.type ?? nighttime?.precipitation?.type,
-        windDirection: selectedPeriod.wind.direction.compass,
-        windSpeedMps: selectedPeriod.wind.speed.value,
-      } satisfies DailyForecastDay;
-    });
+    const forecastDays = parsed.data.days
+      .slice(requestedStartDaysAhead, providerDays)
+      .map((day) => {
+        const daytime = day.daytime;
+        const nighttime = day.nighttime;
+        if (!daytime && !nighttime) {
+          throw new WeatherProviderError(
+            "invalid_data",
+            "QWeather forecast day is incomplete",
+          );
+        }
+        const selectedPeriod = daytime ?? nighttime;
+        if (!selectedPeriod) {
+          throw new WeatherProviderError(
+            "invalid_data",
+            "QWeather forecast day is incomplete",
+          );
+        }
+        const periods = [daytime, nighttime].filter(
+          (period): period is NonNullable<typeof daytime> => period !== undefined,
+        );
+        const probabilities = periods
+          .map((period) => period.precipitation?.probability)
+          .filter((value): value is number => value !== undefined);
+        const amounts = periods
+          .map((period) => period.precipitation?.amount?.value)
+          .filter((value): value is number => value !== undefined);
+        return {
+          date: formatLocalDate(day.forecastStartTime, place.timeZone),
+          condition: selectedPeriod.condition.text,
+          temperatureMinC: day.temperatureMin.value,
+          temperatureMaxC: day.temperatureMax.value,
+          precipitationProbability:
+            probabilities.length > 0
+              ? Math.round(Math.max(...probabilities) * 100)
+              : undefined,
+          precipitationMm: amounts.length > 0 ? Math.max(...amounts) : undefined,
+          precipitationType:
+            daytime?.precipitation?.type ?? nighttime?.precipitation?.type,
+          windDirection: selectedPeriod.wind.direction.compass,
+          windSpeedMps: selectedPeriod.wind.speed.value,
+        } satisfies DailyForecastDay;
+      });
 
     return {
       place,
@@ -534,13 +592,44 @@ async function fetchQWeatherDaily(
 function getFixtureDailyForecast(
   place: PlaceCandidate,
   days: number,
+  startDaysAhead: number,
+  targetDate?: string,
 ): DailyForecast {
+  const requestedStartDaysAhead = targetDate
+    ? getDaysBetween(
+        formatLocalDate(new Date().toISOString(), place.timeZone),
+        targetDate,
+      )
+    : startDaysAhead;
+  if (
+    !Number.isInteger(requestedStartDaysAhead) ||
+    requestedStartDaysAhead < 0 ||
+    requestedStartDaysAhead > 7
+  ) {
+    throw new WeatherProviderError("invalid_data", "目标日期不在每日预报范围内");
+  }
+  const fixtureDays = place.id === "cn-shanghai"
+    ? FIXTURE_FORECAST_DAYS.map((day, index) =>
+        index === 0
+          ? {
+              ...day,
+              condition: "晴",
+              temperatureMinC: 10,
+              temperatureMaxC: 18,
+              precipitationProbability: 5,
+            }
+          : day,
+      )
+    : FIXTURE_FORECAST_DAYS;
+
   return {
     place,
     timeZone: place.timeZone,
-    days: FIXTURE_FORECAST_DAYS.slice(0, days).map((day, index) => ({
+    days: fixtureDays.slice(0, days).map((day, index) => ({
       ...day,
-      date: getFutureLocalDate(place.timeZone, index + 1),
+      date: targetDate
+        ? addCalendarDays(targetDate, index)
+        : getFutureLocalDate(place.timeZone, index + requestedStartDaysAhead),
     })),
     source: "deterministic-weather-fixture",
   };
@@ -575,18 +664,34 @@ export async function getCurrentWeather(place: PlaceCandidate): Promise<WeatherF
 export async function getDailyForecast(
   place: PlaceCandidate,
   days = 7,
+  startDaysAhead = 1,
+  targetDate?: string,
 ): Promise<DailyForecast> {
   const requestedDays = Math.min(Math.max(Math.trunc(days), 1), 7);
+  const requestedStartDaysAhead = Math.min(
+    Math.max(Math.trunc(startDaysAhead), 0),
+    7,
+  );
   const dataSource =
     process.env.WEATHER_MCP_DATA_SOURCE ??
     (process.env.QWEATHER_API_HOST ? "qweather" : "fixture");
 
   if (dataSource === "fixture") {
-    return getFixtureDailyForecast(place, requestedDays);
+    return getFixtureDailyForecast(
+      place,
+      requestedDays,
+      requestedStartDaysAhead,
+      targetDate,
+    );
   }
 
   if (dataSource === "qweather") {
-    return fetchQWeatherDaily(place, requestedDays);
+    return fetchQWeatherDaily(
+      place,
+      requestedDays,
+      requestedStartDaysAhead,
+      targetDate,
+    );
   }
 
   throw new WeatherProviderError(

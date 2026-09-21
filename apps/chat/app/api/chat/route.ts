@@ -1,14 +1,18 @@
 import {
   createDeepSeekClient,
+  extractComparisonDate,
+  extractComparisonPlaceQueries,
   extractForecastDays,
   extractPlaceQuery,
   isCurrentWeatherQuestion,
   isDailyForecastQuestion,
+  isWeatherComparisonQuestion,
   streamReply,
 } from "../../../lib/assistant";
 import {
   getCurrentWeather,
   getDailyForecast,
+  getDailyForecastDay,
   resolvePlace,
 } from "../../../lib/location-client";
 import {
@@ -16,6 +20,7 @@ import {
   isPlaceCandidate,
 } from "../../../lib/place";
 import { appendMessage, getSession } from "../../../lib/session";
+import type { WeatherComparison } from "../../../lib/weather";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -129,6 +134,65 @@ async function streamDailyForecast(
   return reply;
 }
 
+async function streamWeatherComparison(
+  write: EventWriter,
+  places: NonNullable<ReturnType<typeof getSession>["confirmedPlace"]>[],
+  targetDate: string,
+  question?: string,
+): Promise<string> {
+  write("tool.start", { name: "daily_forecast" });
+  let comparison: WeatherComparison;
+  try {
+    const forecasts = await Promise.all(
+      places.map((place) => getDailyForecastDay(place, targetDate)),
+    );
+    if (
+      forecasts.some((forecast) => forecast.days[0]?.date !== targetDate)
+    ) {
+      throw new Error("地点预报的本地日期不一致");
+    }
+    comparison = { forecasts };
+  } catch {
+    throw new WeatherQueryError("同日天气暂时无法确认");
+  }
+  write("tool.complete", { name: "daily_forecast" });
+  write("weather.comparison", { comparison: JSON.stringify(comparison) });
+  let reply = "";
+  for await (const delta of deepSeekClient.streamComparison(comparison, question)) {
+    reply += delta;
+    write("text.delta", { delta });
+  }
+  return reply;
+}
+
+function getLocalDate(timeZone: string, daysAhead: number): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const date = new Date(
+    Date.UTC(
+      Number(values.year),
+      Number(values.month) - 1,
+      Number(values.day) + daysAhead,
+      12,
+    ),
+  );
+  const nextParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const nextValues = Object.fromEntries(
+    nextParts.map((part) => [part.type, part.value]),
+  );
+  return `${nextValues.year}-${nextValues.month}-${nextValues.day}`;
+}
+
 const deepSeekClient = createDeepSeekClient();
 
 export async function POST(request: Request) {
@@ -158,6 +222,69 @@ export async function POST(request: Request) {
     const requestedPlace = body.selectedPlace;
     if (!isPlaceCandidate(requestedPlace)) {
       return Response.json({ error: "地点选择无效" }, { status: 400 });
+    }
+
+    const pendingWeatherComparison = session.pendingWeatherComparison;
+    if (pendingWeatherComparison) {
+      const group = pendingWeatherComparison.places.find(
+        (candidateGroup) =>
+          !candidateGroup.confirmedPlace &&
+          candidateGroup.candidates.some(
+            (candidate) => candidate.id === requestedPlace.id,
+          ),
+      );
+      const selectedPlace = group?.candidates.find(
+        (candidate) => candidate.id === requestedPlace.id,
+      );
+      if (!group || !selectedPlace) {
+        return Response.json({ error: "地点候选已失效" }, { status: 400 });
+      }
+
+      group.confirmedPlace = selectedPlace;
+      appendMessage(sessionId, {
+        role: "user",
+        content: `确认地点：${formatPlace(selectedPlace)}`,
+      });
+
+      return createSseResponse(async (write) => {
+        write("message.start", { sessionId });
+        write("comparison.place.confirmed", {
+          place: JSON.stringify(selectedPlace),
+        });
+        const remainingGroups = pendingWeatherComparison.places
+          .filter((candidateGroup) => !candidateGroup.confirmedPlace)
+          .map(({ query, candidates }) => ({ query, candidates }));
+        write("comparison.candidates", {
+          groups: JSON.stringify(remainingGroups),
+        });
+
+        const confirmedPlaces = pendingWeatherComparison.places
+          .map((candidateGroup) => candidateGroup.confirmedPlace)
+          .filter(
+            (place): place is NonNullable<typeof place> => place !== undefined,
+          );
+        let reply: string;
+        if (confirmedPlaces.length === pendingWeatherComparison.places.length) {
+          session.pendingWeatherComparison = undefined;
+          const targetDate = pendingWeatherComparison.targetDate ??
+            getLocalDate(
+              confirmedPlaces[0].timeZone,
+              pendingWeatherComparison.daysAhead ?? 0,
+            );
+          reply = await streamWeatherComparison(
+            write,
+            confirmedPlaces,
+            targetDate,
+            pendingWeatherComparison.question,
+          );
+        } else {
+          reply = `已确认${formatPlace(selectedPlace)}，请再选择另一个地点。`;
+          await streamAssistantReply(write, reply);
+        }
+
+        appendMessage(sessionId, { role: "assistant", content: reply });
+        write("message.complete", { message: reply });
+      });
     }
 
     const selectedPlace = session.pendingPlaces.find(
@@ -199,6 +326,57 @@ export async function POST(request: Request) {
   }
 
   appendMessage(sessionId, { role: "user", content: message });
+  session.pendingWeatherComparison = undefined;
+
+  if (isWeatherComparisonQuestion(message)) {
+    const comparisonQueries = extractComparisonPlaceQueries(message);
+    const comparisonDate = extractComparisonDate(message);
+    if (!comparisonQueries || !comparisonDate) {
+      return createSseResponse(async (write) => {
+        write("message.start", { sessionId });
+        const reply = "请明确说明要比较的日期，例如今天、明天或后天。";
+        await streamAssistantReply(write, reply);
+        appendMessage(sessionId, { role: "assistant", content: reply });
+        write("message.complete", { message: reply });
+      });
+    }
+
+    return createSseResponse(async (write) => {
+      write("message.start", { sessionId });
+      write("tool.start", { name: "resolve_place" });
+      const [firstCandidates, secondCandidates] = await Promise.all(
+        comparisonQueries.map((query) => resolvePlace(query)),
+      );
+      const places = [
+        { query: comparisonQueries[0], candidates: firstCandidates },
+        { query: comparisonQueries[1], candidates: secondCandidates },
+      ];
+      session.pendingPlaces = [];
+      session.pendingWeatherRequest = undefined;
+      session.pendingWeatherComparison = places.every(
+        (candidateGroup) => candidateGroup.candidates.length > 0,
+      )
+        ? { ...comparisonDate, question: message, places }
+        : undefined;
+      write("tool.complete", {
+        name: "resolve_place",
+        resultCount: String(firstCandidates.length + secondCandidates.length),
+      });
+
+      const reply = session.pendingWeatherComparison
+        ? "找到了两个地点，请分别选择要比较的地点。"
+        : "至少有一个地点没有找到，请换一种写法后重试。";
+      await streamAssistantReply(write, reply);
+      appendMessage(sessionId, { role: "assistant", content: reply });
+      if (session.pendingWeatherComparison) {
+        write("comparison.candidates", {
+          groups: JSON.stringify(places),
+        });
+      }
+      write("message.complete", { message: reply });
+    });
+  }
+
   const placeQuery = extractPlaceQuery(message);
 
   if (placeQuery) {

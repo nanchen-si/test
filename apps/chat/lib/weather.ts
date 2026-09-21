@@ -35,6 +35,10 @@ export type DailyForecast = {
   source: string;
 };
 
+export type WeatherComparison = {
+  forecasts: DailyForecast[];
+};
+
 function isOptionalNumber(value: unknown): value is number | undefined {
   return value === undefined || typeof value === "number";
 }

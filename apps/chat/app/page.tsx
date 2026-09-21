@@ -18,6 +18,11 @@ type ServerEvent = {
   data: Record<string, string>;
 };
 
+type ComparisonCandidateGroup = {
+  query: string;
+  candidates: PlaceCandidate[];
+};
+
 function readServerEvent(block: string): ServerEvent | null {
   const lines = block.split("\n");
   const event = lines.find((line) => line.startsWith("event: "))?.slice(7);
@@ -37,11 +42,22 @@ export default function ChatPage() {
   const [status, setStatus] = useState("等待输入");
   const [isSending, setIsSending] = useState(false);
   const [candidates, setCandidates] = useState<PlaceCandidate[]>([]);
+  const [comparisonCandidates, setComparisonCandidates] = useState<
+    ComparisonCandidateGroup[]
+  >([]);
+  const [comparisonConfirmedPlaces, setComparisonConfirmedPlaces] = useState<
+    PlaceCandidate[]
+  >([]);
   const [confirmedPlace, setConfirmedPlace] = useState<PlaceCandidate>();
 
   async function submitMessage(message: string, selectedPlace?: PlaceCandidate) {
     if (!message || isSending) {
       return;
+    }
+
+    if (!selectedPlace) {
+      setComparisonCandidates([]);
+      setComparisonConfirmedPlaces([]);
     }
 
     setDraft("");
@@ -115,11 +131,40 @@ export default function ChatPage() {
               setCandidates(parsed);
               setStatus("请选择一个地点");
             }
+          } else if (serverEvent?.event === "comparison.candidates") {
+            const parsed: unknown = JSON.parse(serverEvent.data.groups);
+            if (
+              Array.isArray(parsed) &&
+              parsed.every(
+                (group) =>
+                  group &&
+                  typeof group === "object" &&
+                  typeof (group as { query?: unknown }).query === "string" &&
+                  Array.isArray((group as { candidates?: unknown }).candidates) &&
+                  (group as { candidates: unknown[] }).candidates.every(
+                    isPlaceCandidate,
+                  ),
+              )
+            ) {
+              waitingForPlaceSelection = parsed.length > 0;
+              setCandidates([]);
+              setComparisonCandidates(parsed as ComparisonCandidateGroup[]);
+              setStatus(parsed.length > 0 ? "请选择比较地点" : "正在生成回答");
+            }
           } else if (serverEvent?.event === "place.confirmed") {
             const parsed: unknown = JSON.parse(serverEvent.data.place);
             if (isPlaceCandidate(parsed)) {
               setConfirmedPlace(parsed);
               setCandidates([]);
+            }
+          } else if (serverEvent?.event === "comparison.place.confirmed") {
+            const parsed: unknown = JSON.parse(serverEvent.data.place);
+            if (isPlaceCandidate(parsed)) {
+              setComparisonConfirmedPlaces((current) =>
+                current.some((place) => place.id === parsed.id)
+                  ? current
+                  : [...current, parsed],
+              );
             }
           } else if (serverEvent?.event === "message.complete") {
             setStatus(waitingForPlaceSelection ? "请选择一个地点" : "已完成");
@@ -204,6 +249,36 @@ export default function ChatPage() {
               ))}
             </div>
           </section>
+        )}
+
+        {comparisonCandidates.length > 0 && (
+          <section className="place-candidates" aria-label="比较地点候选">
+            {comparisonCandidates.map((group) => (
+              <div key={group.query}>
+                <p>请选择“{group.query}”对应的地点</p>
+                <div className="candidate-list">
+                  {group.candidates.map((candidate) => (
+                    <button
+                      type="button"
+                      key={candidate.id}
+                      onClick={() =>
+                        void submitMessage(`确认地点：${formatPlace(candidate)}`, candidate)
+                      }
+                      disabled={isSending}
+                    >
+                      {formatPlace(candidate)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {comparisonConfirmedPlaces.length > 0 && (
+          <p className="confirmed-place">
+            已确认比较地点：{comparisonConfirmedPlaces.map(formatPlace).join("；")}
+          </p>
         )}
 
         {confirmedPlace && (

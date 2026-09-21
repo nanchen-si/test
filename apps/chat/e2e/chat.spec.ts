@@ -205,3 +205,36 @@ test("刷新后不会继续使用已确认地点查询预报", async ({ page }) 
 
   await expect(page.getByText("请先告诉我想查询的地点。")).toBeVisible();
 });
+
+test("可以比较两个地点同一天的每日天气", async ({ page }) => {
+  await page.goto("/");
+  const tomorrow = await getBeijingDate(page, 1);
+
+  await page
+    .getByRole("textbox", { name: "消息" })
+    .fill(`比较北京和上海 ${tomorrow} 的天气`);
+  await page.getByRole("button", { name: "发送" }).click();
+
+  await expect(
+    page.getByRole("button", { name: "北京市, 北京市, 中国" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "上海市, 上海市, 中国" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "北京市, 北京市, 中国" }).click();
+  await page.getByRole("button", { name: "上海市, 上海市, 中国" }).click();
+
+  await expect(page.getByText("同日天气比较", { exact: false })).toBeVisible();
+  await expect(
+    page.getByText("同日天气比较：北京市, 北京市, 中国", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("上海市, 上海市, 中国（", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.locator("li.message.assistant").filter({ hasText: "同日天气比较" }),
+  ).toContainText(tomorrow);
+  await expect(page.getByText("晴", { exact: false })).toBeVisible();
+  await expect(page.getByText("多云", { exact: false })).toBeVisible();
+});

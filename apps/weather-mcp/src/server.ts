@@ -99,6 +99,8 @@ function createWeatherServer() {
         range: z.object({
           type: z.literal("daily"),
           days: z.number().int().min(1).max(7).default(7),
+          startDaysAhead: z.number().int().min(0).max(7).default(1),
+          targetDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).optional(),
         }),
       }),
     },
@@ -107,7 +109,12 @@ function createWeatherServer() {
       const startedAt = Date.now();
 
       try {
-        const forecast = await getDailyForecast(place, range.days);
+        const forecast = await getDailyForecast(
+          place,
+          range.days,
+          range.startDaysAhead,
+          range.targetDate,
+        );
         console.info({
           requestId,
           tool: "daily_forecast",

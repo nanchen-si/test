@@ -82,6 +82,8 @@ export async function getCurrentWeather(
 export async function getDailyForecast(
   place: PlaceCandidate,
   days: number,
+  startDaysAhead = 1,
+  targetDate?: string,
 ): Promise<DailyForecast> {
   const client = new Client({ name: "weather-chat", version: "0.1.0" });
   const transport = new StreamableHTTPClientTransport(new URL(weatherMcpUrl));
@@ -92,7 +94,7 @@ export async function getDailyForecast(
       name: "daily_forecast",
       arguments: {
         place,
-        range: { type: "daily", days },
+        range: { type: "daily", days, startDaysAhead, targetDate },
       },
     });
     const text = result.content?.find((item) => item.type === "text")?.text;
@@ -113,4 +115,17 @@ export async function getDailyForecast(
   } finally {
     await client.close();
   }
+}
+
+export async function getDailyForecastDay(
+  place: PlaceCandidate,
+  targetDate: string,
+): Promise<DailyForecast> {
+  const forecast = await getDailyForecast(place, 1, 1, targetDate);
+  const day = forecast.days[0];
+  if (!day) {
+    throw new Error("每日预报缺少目标日期");
+  }
+
+  return { ...forecast, days: [day] };
 }

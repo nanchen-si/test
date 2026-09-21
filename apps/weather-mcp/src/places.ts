@@ -19,6 +19,15 @@ const PLACE_CATALOG: PlaceCandidate[] = [
     timeZone: "Asia/Shanghai",
   },
   {
+    id: "cn-shanghai",
+    name: "上海市",
+    administrativeArea: "上海市",
+    country: "中国",
+    latitude: 31.2304,
+    longitude: 121.4737,
+    timeZone: "Asia/Shanghai",
+  },
+  {
     id: "us-springfield-il",
     name: "Springfield",
     administrativeArea: "Illinois",
