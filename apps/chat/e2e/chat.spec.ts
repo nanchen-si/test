@@ -14,6 +14,18 @@ test("用户可以在浏览器中完成一轮中文普通对话", async ({ page 
   await expect(page.getByText("已完成")).toBeVisible();
 });
 
+test("普通消息不会被误判成天气查询", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("textbox", { name: "消息" }).fill("聊天气氛很好");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  await expect(page.getByText("我收到了你的消息：“聊天气氛很好”", {
+    exact: false,
+  })).toBeVisible();
+  await expect(page.getByText("请先告诉我想查询的地点。")).toHaveCount(0);
+});
+
 test("当前页面会话会记住消息，但刷新后会话状态清空", async ({ page }) => {
   await page.goto("/");
 
@@ -73,4 +85,44 @@ test("明确地点也会先经过地点候选确认", async ({ page }) => {
   await candidate.click();
 
   await expect(page.getByText("已确认地点：北京市, 北京市, 中国")).toBeVisible();
+});
+
+test("确认地点后可以通过 Weather MCP 查询当前天气", async ({ page }) => {
+  await page.goto("/");
+
+  await page
+    .getByRole("textbox", { name: "消息" })
+    .fill("北京今天会下雨吗");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  await page.getByRole("button", { name: "北京市, 北京市, 中国" }).click();
+
+  await expect(
+    page.getByText(
+      "北京市, 北京市, 中国当前天气：18°C，晴。体感 17°C，降水概率 10%",
+      {
+      exact: false,
+      },
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("数据时间：2026-01-15 08:00，时区：Asia/Shanghai", {
+    exact: false,
+  })).toBeVisible();
+});
+
+test("确认地点后可以省略地点继续询问当前天气", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("textbox", { name: "消息" }).fill("北京天气");
+  await page.getByRole("button", { name: "发送" }).click();
+  await page.getByRole("button", { name: "北京市, 北京市, 中国" }).click();
+  await expect(page.getByText("北京市, 北京市, 中国当前天气：", { exact: false }))
+    .toBeVisible();
+
+  await page.getByRole("textbox", { name: "消息" }).fill("那现在天气怎么样");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  await expect(
+    page.getByText("北京市, 北京市, 中国当前天气：18°C，晴", { exact: false }),
+  ).toHaveCount(2);
 });

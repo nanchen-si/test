@@ -1,9 +1,13 @@
 import {
-  createDeterministicDeepSeekClient,
+  createDeepSeekClient,
   extractPlaceQuery,
+  isCurrentWeatherQuestion,
   streamReply,
 } from "../../../lib/assistant";
-import { resolvePlace } from "../../../lib/location-client";
+import {
+  getCurrentWeather,
+  resolvePlace,
+} from "../../../lib/location-client";
 import {
   formatPlace,
   isPlaceCandidate,
@@ -23,6 +27,8 @@ type EventWriter = (
   event: string,
   data: Record<string, string>,
 ) => void;
+
+class WeatherQueryError extends Error {}
 
 function writeEvent(
   controller: ReadableStreamDefaultController<Uint8Array>,
@@ -45,8 +51,13 @@ function createSseResponse(run: (write: EventWriter) => Promise<void>): Response
       try {
         await run(write);
         controller.close();
-      } catch {
-        write("error", { message: "聊天请求失败" });
+      } catch (error) {
+        write("error", {
+          message:
+            error instanceof WeatherQueryError
+              ? error.message
+              : "聊天请求失败",
+        });
         controller.close();
       }
     },
@@ -70,7 +81,29 @@ async function streamAssistantReply(
   }
 }
 
-const deepSeekClient = createDeterministicDeepSeekClient();
+async function streamCurrentWeather(
+  write: EventWriter,
+  place: NonNullable<ReturnType<typeof getSession>["confirmedPlace"]>,
+  question?: string,
+): Promise<string> {
+  write("tool.start", { name: "current_weather" });
+  let weather: Awaited<ReturnType<typeof getCurrentWeather>>;
+  try {
+    weather = await getCurrentWeather(place);
+  } catch {
+    throw new WeatherQueryError("当前天气暂时无法确认");
+  }
+  write("tool.complete", { name: "current_weather" });
+  write("weather.fact", { weather: JSON.stringify(weather) });
+  let reply = "";
+  for await (const delta of deepSeekClient.streamWeather(weather, question)) {
+    reply += delta;
+    write("text.delta", { delta });
+  }
+  return reply;
+}
+
+const deepSeekClient = createDeepSeekClient();
 
 export async function POST(request: Request) {
   let body: ChatRequest;
@@ -120,8 +153,7 @@ export async function POST(request: Request) {
       write("place.confirmed", {
         place: JSON.stringify(selectedPlace),
       });
-      const reply = `已确认地点：${formatPlace(selectedPlace)}。现在可以继续询问天气。`;
-      await streamAssistantReply(write, reply);
+      const reply = await streamCurrentWeather(write, selectedPlace, message);
       appendMessage(sessionId, { role: "assistant", content: reply });
       write("message.complete", { message: reply });
     });
@@ -152,6 +184,29 @@ export async function POST(request: Request) {
           candidates: JSON.stringify(candidates),
         });
       }
+      write("message.complete", { message: reply });
+    });
+  }
+
+  if (isCurrentWeatherQuestion(message)) {
+    if (!session.confirmedPlace) {
+      return createSseResponse(async (write) => {
+        write("message.start", { sessionId });
+        const reply = "请先告诉我想查询的地点。";
+        await streamAssistantReply(write, reply);
+        appendMessage(sessionId, { role: "assistant", content: reply });
+        write("message.complete", { message: reply });
+      });
+    }
+
+    return createSseResponse(async (write) => {
+      write("message.start", { sessionId });
+      const reply = await streamCurrentWeather(
+        write,
+        session.confirmedPlace!,
+        message,
+      );
+      appendMessage(sessionId, { role: "assistant", content: reply });
       write("message.complete", { message: reply });
     });
   }

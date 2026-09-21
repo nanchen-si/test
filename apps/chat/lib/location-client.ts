@@ -2,6 +2,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 
 import type { PlaceCandidate } from "./place";
 import { isPlaceCandidate } from "./place";
+import { isWeatherFact, type WeatherFact } from "./weather";
 
 const weatherMcpUrl =
   process.env.WEATHER_MCP_URL ?? "http://127.0.0.1:3101/mcp";
@@ -36,6 +37,38 @@ export async function resolvePlace(query: string): Promise<PlaceCandidate[]> {
     }
 
     return candidates;
+  } finally {
+    await client.close();
+  }
+}
+
+export async function getCurrentWeather(
+  place: PlaceCandidate,
+): Promise<WeatherFact> {
+  const client = new Client({ name: "weather-chat", version: "0.1.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(weatherMcpUrl));
+
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({
+      name: "current_weather",
+      arguments: { place, range: "current" },
+    });
+    const text = result.content?.find((item) => item.type === "text")?.text;
+    if (!text) {
+      throw new Error("当前天气返回为空");
+    }
+
+    const payload: unknown = JSON.parse(text);
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      !isWeatherFact((payload as { weather?: unknown }).weather)
+    ) {
+      throw new Error("当前天气返回格式无效");
+    }
+
+    return (payload as { weather: WeatherFact }).weather;
   } finally {
     await client.close();
   }

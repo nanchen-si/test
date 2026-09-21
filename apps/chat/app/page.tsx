@@ -81,9 +81,17 @@ export default function ChatPage() {
           if (serverEvent?.event === "message.start") {
             setStatus("正在生成回答");
           } else if (serverEvent?.event === "tool.start") {
-            setStatus("正在解析地点");
+            setStatus(
+              serverEvent.data.name === "current_weather"
+                ? "正在查询天气"
+                : "正在解析地点",
+            );
           } else if (serverEvent?.event === "tool.complete") {
-            setStatus("地点解析完成");
+            setStatus(
+              serverEvent.data.name === "current_weather"
+                ? "天气查询完成"
+                : "地点解析完成",
+            );
           } else if (serverEvent?.event === "text.delta") {
             setMessages((current) => {
               const next = [...current];
@@ -122,14 +130,18 @@ export default function ChatPage() {
           break;
         }
       }
-    } catch {
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error && error.message
+          ? error.message
+          : "抱歉，本轮对话暂时无法完成。";
       setMessages((current) => {
         const next = [...current];
         const last = next.at(-1);
         if (last?.role === "assistant") {
           next[next.length - 1] = {
             ...last,
-            content: "抱歉，本轮对话暂时无法完成。",
+            content: errorMessage,
           };
         }
         return next;

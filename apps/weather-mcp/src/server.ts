@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 
 import { resolvePlaces } from "./places.js";
+import { getCurrentWeather, WeatherProviderError } from "./weather.js";
 
 const host = process.env.WEATHER_MCP_HOST ?? "127.0.0.1";
 const port = Number(process.env.WEATHER_MCP_PORT ?? 3101);
@@ -29,6 +30,58 @@ function createWeatherServer() {
         },
       ],
     }),
+  );
+
+  server.registerTool(
+    "current_weather",
+    {
+      description: "Get current weather for an explicitly confirmed place.",
+      inputSchema: z.object({
+        place: z.object({
+          id: z.string().min(1),
+          name: z.string().min(1),
+          administrativeArea: z.string().min(1),
+          country: z.string().min(1),
+          latitude: z.number().min(-90).max(90),
+          longitude: z.number().min(-180).max(180),
+          timeZone: z.string().min(1),
+        }),
+        range: z.literal("current"),
+      }),
+    },
+    async ({ place }) => {
+      const requestId = randomUUID();
+      const startedAt = Date.now();
+
+      try {
+        const weather = await getCurrentWeather(place);
+        console.info({
+          requestId,
+          tool: "current_weather",
+          durationMs: Date.now() - startedAt,
+          status: "success",
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ weather }),
+            },
+          ],
+        };
+      } catch (error) {
+        const category =
+          error instanceof WeatherProviderError ? error.category : "unavailable";
+        console.error({
+          requestId,
+          tool: "current_weather",
+          durationMs: Date.now() - startedAt,
+          status: "failed",
+          errorCategory: category,
+        });
+        throw new Error("当前天气暂时无法确认");
+      }
+    },
   );
 
   return server;
