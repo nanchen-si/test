@@ -31,13 +31,20 @@ export type WeatherMcpFailureMode = WeatherServiceErrorCategory;
 
 export type WeatherMcpRequestOptions = {
   failureMode?: WeatherMcpFailureMode;
+  requestId?: string;
 };
 
 function createTransport(options?: WeatherMcpRequestOptions) {
+  const headers: Record<string, string> = {};
+  if (options?.requestId) {
+    headers["x-request-id"] = options.requestId;
+  }
+  if (options?.failureMode) {
+    headers["x-weather-mcp-failure"] = options.failureMode;
+  }
+
   return new StreamableHTTPClientTransport(new URL(weatherMcpUrl), {
-    requestInit: options?.failureMode
-      ? { headers: { "x-weather-mcp-failure": options.failureMode } }
-      : undefined,
+    requestInit: Object.keys(headers).length > 0 ? { headers } : undefined,
   });
 }
 
@@ -64,6 +71,8 @@ async function callWeatherTool<T>(
 ): Promise<T> {
   const client = new Client({ name: "weather-chat", version: "0.1.0" });
   const transport = createTransport(options);
+  const startedAt = Date.now();
+  const requestId = options?.requestId ?? "unknown";
 
   try {
     await client.connect(transport);
@@ -78,13 +87,26 @@ async function callWeatherTool<T>(
       throw new WeatherServiceError("invalid_data");
     }
 
-    return parse(text);
+    const parsed = parse(text);
+    console.info({
+      requestId,
+      tool: name,
+      durationMs: Date.now() - startedAt,
+      status: "success",
+    });
+    return parsed;
   } catch (error) {
-    if (error instanceof WeatherServiceError) {
-      throw error;
-    }
-
-    throw new WeatherServiceError("mcp_unavailable");
+    const serviceError = error instanceof WeatherServiceError
+      ? error
+      : new WeatherServiceError("mcp_unavailable");
+    console.error({
+      requestId,
+      tool: name,
+      durationMs: Date.now() - startedAt,
+      status: "failed",
+      errorCategory: serviceError.category,
+    });
+    throw serviceError;
   } finally {
     await client.close().catch(() => undefined);
   }

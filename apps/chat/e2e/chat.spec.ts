@@ -63,6 +63,16 @@ test("普通消息不会被误判成天气查询", async ({ page }) => {
   await expect(page.getByText("请先告诉我想查询的地点。")).toHaveCount(0);
 });
 
+test("没有地点时会追问而不查询天气", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("textbox", { name: "消息" }).fill("今天会下雨吗");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  await expect(page.getByText("请先告诉我想查询的地点。")).toBeVisible();
+  await expect(page.getByText("当前天气：", { exact: false })).toHaveCount(0);
+});
+
 test("当前页面会话会记住消息，但刷新后会话状态清空", async ({ page }) => {
   await page.goto("/");
 
@@ -338,3 +348,39 @@ for (const failure of [
     ).toHaveCount(0);
   });
 }
+
+test("浏览器网络请求不会暴露后端凭据", async ({ page }) => {
+  const requests: string[] = [];
+  const responses: Promise<string>[] = [];
+  page.on("request", (request) => {
+    requests.push(JSON.stringify({
+      url: request.url(),
+      headers: request.headers(),
+      postData: request.postData(),
+    }));
+  });
+  page.on("response", (response) => {
+    const contentType = response.headers()["content-type"] ?? "";
+    if (!/text|json|javascript|event-stream/iu.test(contentType)) {
+      return;
+    }
+    responses.push(
+      response.body()
+        .then((body) => body.toString("utf8"))
+        .catch(() => ""),
+    );
+  });
+
+  await page.goto("/");
+  await page.getByRole("textbox", { name: "消息" }).fill("北京天气");
+  await page.getByRole("button", { name: "发送" }).click();
+  await page.getByRole("button", { name: "北京市, 北京市, 中国" }).click();
+  await expect(page.getByText("北京市, 北京市, 中国当前天气：", { exact: false }))
+    .toBeVisible();
+
+  const traffic = `${requests.join("\n")}\n${(await Promise.all(responses)).join("\n")}`;
+  expect(traffic).not.toContain("DEEPSEEK_API_KEY");
+  expect(traffic).not.toContain("QWEATHER_");
+  expect(traffic).not.toMatch(/authorization|bearer/i);
+  expect(traffic).not.toContain("qweather-test-secret");
+});

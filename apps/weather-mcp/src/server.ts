@@ -9,7 +9,6 @@ import { resolveCoordinates, resolvePlaces } from "./places.js";
 import {
   getCurrentWeather,
   getDailyForecast,
-  type WeatherErrorCategory,
   type WeatherFailureMode,
   WeatherProviderError,
 } from "./weather.js";
@@ -20,7 +19,10 @@ const port = Number(process.env.WEATHER_MCP_PORT ?? 3101);
 type FailureMode = WeatherFailureMode | "mcp_unavailable";
 
 function readFailureMode(request: import("node:http").IncomingMessage): FailureMode | undefined {
-  if (process.env.WEATHER_MCP_FAILURE_TEST_MODE !== "1") {
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.WEATHER_MCP_FAILURE_TEST_MODE !== "1"
+  ) {
     return undefined;
   }
 
@@ -40,6 +42,11 @@ function readFailureMode(request: import("node:http").IncomingMessage): FailureM
   return modes.includes(value as FailureMode) ? value as FailureMode : undefined;
 }
 
+function readRequestId(request: import("node:http").IncomingMessage): string {
+  const value = request.headers["x-request-id"];
+  return typeof value === "string" && value.length > 0 ? value : randomUUID();
+}
+
 const confirmedPlaceSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -50,7 +57,10 @@ const confirmedPlaceSchema = z.object({
   timeZone: z.string().min(1),
 });
 
-function createWeatherServer(failureMode?: FailureMode) {
+function createWeatherServer(
+  failureMode?: FailureMode,
+  requestId?: string,
+) {
   const server = new McpServer({ name: "weather-mcp", version: "0.1.0" });
 
   server.registerTool(
@@ -61,14 +71,35 @@ function createWeatherServer(failureMode?: FailureMode) {
         query: z.string().trim().min(1).max(100),
       }),
     },
-    async ({ query }) => ({
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ candidates: resolvePlaces(query) }),
-        },
-      ],
-    }),
+    async ({ query }) => {
+      const startedAt = Date.now();
+      try {
+        const candidates = resolvePlaces(query);
+        console.info({
+          requestId: requestId ?? randomUUID(),
+          tool: "resolve_place",
+          durationMs: Date.now() - startedAt,
+          status: "success",
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ candidates }),
+            },
+          ],
+        };
+      } catch {
+        console.error({
+          requestId: requestId ?? randomUUID(),
+          tool: "resolve_place",
+          durationMs: Date.now() - startedAt,
+          status: "failed",
+          errorCategory: "unavailable",
+        });
+        throw new Error("WEATHER_PROVIDER_ERROR:unavailable");
+      }
+    },
   );
 
   server.registerTool(
@@ -80,14 +111,35 @@ function createWeatherServer(failureMode?: FailureMode) {
         longitude: z.number().min(-180).max(180),
       }),
     },
-    async ({ latitude, longitude }) => ({
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ candidates: resolveCoordinates(latitude, longitude) }),
-        },
-      ],
-    }),
+    async ({ latitude, longitude }) => {
+      const startedAt = Date.now();
+      try {
+        const candidates = resolveCoordinates(latitude, longitude);
+        console.info({
+          requestId: requestId ?? randomUUID(),
+          tool: "resolve_coordinates",
+          durationMs: Date.now() - startedAt,
+          status: "success",
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ candidates }),
+            },
+          ],
+        };
+      } catch {
+        console.error({
+          requestId: requestId ?? randomUUID(),
+          tool: "resolve_coordinates",
+          durationMs: Date.now() - startedAt,
+          status: "failed",
+          errorCategory: "unavailable",
+        });
+        throw new Error("WEATHER_PROVIDER_ERROR:unavailable");
+      }
+    },
   );
 
   server.registerTool(
@@ -100,7 +152,7 @@ function createWeatherServer(failureMode?: FailureMode) {
       }),
     },
     async ({ place }) => {
-      const requestId = randomUUID();
+      const toolRequestId = requestId ?? randomUUID();
       const startedAt = Date.now();
 
       try {
@@ -109,7 +161,7 @@ function createWeatherServer(failureMode?: FailureMode) {
           failureMode === "mcp_unavailable" ? undefined : failureMode,
         );
         console.info({
-          requestId,
+          requestId: toolRequestId,
           tool: "current_weather",
           durationMs: Date.now() - startedAt,
           status: "success",
@@ -126,7 +178,7 @@ function createWeatherServer(failureMode?: FailureMode) {
         const category =
           error instanceof WeatherProviderError ? error.category : "unavailable";
         console.error({
-          requestId,
+          requestId: toolRequestId,
           tool: "current_weather",
           durationMs: Date.now() - startedAt,
           status: "failed",
@@ -152,7 +204,7 @@ function createWeatherServer(failureMode?: FailureMode) {
       }),
     },
     async ({ place, range }) => {
-      const requestId = randomUUID();
+      const toolRequestId = requestId ?? randomUUID();
       const startedAt = Date.now();
 
       try {
@@ -164,7 +216,7 @@ function createWeatherServer(failureMode?: FailureMode) {
           failureMode === "mcp_unavailable" ? undefined : failureMode,
         );
         console.info({
-          requestId,
+          requestId: toolRequestId,
           tool: "daily_forecast",
           durationMs: Date.now() - startedAt,
           status: "success",
@@ -181,7 +233,7 @@ function createWeatherServer(failureMode?: FailureMode) {
         const category =
           error instanceof WeatherProviderError ? error.category : "unavailable";
         console.error({
-          requestId,
+          requestId: toolRequestId,
           tool: "daily_forecast",
           durationMs: Date.now() - startedAt,
           status: "failed",
@@ -208,14 +260,23 @@ const httpServer = createServer(async (request, response) => {
     return;
   }
 
+  const startedAt = Date.now();
+  const requestId = readRequestId(request);
   const failureMode = readFailureMode(request);
   if (failureMode === "mcp_unavailable") {
+    console.error({
+      requestId,
+      tool: "mcp_transport",
+      durationMs: Date.now() - startedAt,
+      status: "failed",
+      errorCategory: "mcp_unavailable",
+    });
     response.writeHead(503, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: "Weather MCP unavailable" }));
     return;
   }
 
-  const server = createWeatherServer(failureMode);
+  const server = createWeatherServer(failureMode, requestId);
   const transport = new NodeStreamableHTTPServerTransport({
     enableJsonResponse: true,
     sessionIdGenerator: undefined,
@@ -229,7 +290,13 @@ const httpServer = createServer(async (request, response) => {
       response.writeHead(500, { "Content-Type": "application/json" });
     }
     response.end(JSON.stringify({ error: "Weather MCP request failed" }));
-    console.error({ requestId: randomUUID(), error });
+    console.error({
+      requestId,
+      tool: "mcp_transport",
+      durationMs: Date.now() - startedAt,
+      status: "failed",
+      errorCategory: "unavailable",
+    });
   }
 });
 

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   createDeepSeekClient,
   extractComparisonDate,
@@ -62,7 +64,10 @@ function weatherServiceErrorMessage(
 }
 
 function readTestFailureMode(request: Request): WeatherMcpFailureMode | undefined {
-  if (process.env.WEATHER_MCP_FAILURE_TEST_MODE !== "1") {
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.WEATHER_MCP_FAILURE_TEST_MODE !== "1"
+  ) {
     return undefined;
   }
 
@@ -252,6 +257,7 @@ function getLocalDate(timeZone: string, daysAhead: number): string {
 const deepSeekClient = createDeepSeekClient();
 
 export async function POST(request: Request) {
+  const requestId = randomUUID();
   let body: ChatRequest;
   try {
     body = (await request.json()) as ChatRequest;
@@ -274,7 +280,7 @@ export async function POST(request: Request) {
   const message = body.message.trim();
   const session = getSession(sessionId);
   const failureMode = readTestFailureMode(request);
-  const weatherMcpOptions = failureMode ? { failureMode } : undefined;
+  const weatherMcpOptions = { requestId, failureMode };
 
   if (body.location !== undefined) {
     const location = body.location;
