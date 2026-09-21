@@ -12,7 +12,7 @@
 
 聊天应用提供浏览器聊天界面，并在后端连接 DeepSeek 和 Weather MCP 服务。DeepSeek 使用工具调用决定何时解析地点和查询天气；聊天后端负责执行 MCP 调用、把结构化天气事实回传给模型，并通过 SSE 向浏览器推送工具状态和回答文本。
 
-Weather MCP 服务使用 Streamable HTTP 对外提供 MCP 能力，内部通过和风天气 GeoAPI、实时天气和每日预报接口获取数据。服务使用 JWT 和专属 API Host 认证和风天气，并将供应商响应转换为稳定的天气事实结构。浏览器永远不接触 DeepSeek 或和风天气凭据。
+Weather MCP 服务使用 Streamable HTTP 对外提供 MCP 能力，内部通过和风天气 GeoAPI、实时天气和每日预报接口获取数据。服务使用 API Key 和专属 API Host 认证和风天气，并将供应商响应转换为稳定的天气事实结构。浏览器永远不接触 DeepSeek 或和风天气凭据。
 
 第一阶段只支持主动查询当前天气、未来每日预报和城市间天气比较。地点有歧义时必须先让用户选择；确认后的地点只在当前对话会话中保留，刷新页面后清空。
 
@@ -67,7 +67,7 @@ Weather MCP 服务使用 Streamable HTTP 对外提供 MCP 能力，内部通过�
 - 当前天气工具和每日预报工具只接收已确认地点的标准坐标、时区和查询范围，不重新解释自然语言地点。
 - 每日预报默认返回未来 7 天，使用查询地点的本地日期和时间。
 - 第一版不暴露小时预报、天气预警、空气质量和生活指数工具。
-- Weather MCP 内部使用和风天气 GeoAPI、实时天气和每日预报能力；和风天气认证使用 JWT 和开发者专属 API Host。
+- Weather MCP 内部使用和风天气 GeoAPI、实时天气和每日预报能力；和风天气认证使用 API Key 和开发者专属 API Host。
 - Weather MCP 将和风天气响应转换为结构化天气事实，至少包含地点、坐标、时区、数据时间、温度、体感温度、天气现象、降水概率、降水量、风向、风速和来源。
 - 结构化天气事实由 Weather MCP 返回，面向用户的自然语言表达由 DeepSeek 生成。
 - 聊天应用通过 SSE 向浏览器推送工具开始、工具完成、文本增量、消息完成和错误事件。
@@ -111,7 +111,7 @@ Weather MCP 服务使用 Streamable HTTP 对外提供 MCP 能力，内部通过�
 
 ## Further Notes
 
-- 运行 POC 前需要准备 DeepSeek API Key、和风天气 JWT 凭据和开发者专属 API Host；这些值只通过后端环境变量提供。
+- 运行 POC 前需要准备 DeepSeek API Key、和风天气 API Key 和开发者专属 API Host；这些值只通过后端环境变量提供。
 - 和风天气官方文档提供 GeoAPI、实时天气和每日天气预报能力；每日预报默认最多可请求 10 天，本规格将产品默认限制为 7 天。
 - 该规格遵循 `docs/adr/0001-separate-weather-facts-from-conversation.md` 中已确认的 MCP 边界。
 - 规格已准备使用 triage 角色 `ready-for-agent`；本仓库实际对应的 GitHub 标签名称是 `可交给代理`。

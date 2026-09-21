@@ -34,7 +34,7 @@ npm run dev
 npm run dev:mcp
 ```
 
-和风天气凭据、DeepSeek API Key 和专属 API Host 不应写入前端代码、浏览器可访问的环境变量、日志或版本库。
+和风天气 API Key、DeepSeek API Key 和专属 API Host 不应写入前端代码、浏览器可访问的环境变量、日志或版本库。
 
 ## 验证
 

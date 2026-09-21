@@ -1,5 +1,3 @@
-import { createPrivateKey, sign } from "node:crypto";
-
 import { z } from "zod/v4";
 
 import type { PlaceCandidate } from "./places.js";
@@ -295,60 +293,38 @@ const qWeatherDailyResponseSchema = z
   })
   .passthrough();
 
-function encodeBase64Url(value: string | Uint8Array): string {
-  return Buffer.from(value).toString("base64url");
-}
-
-function createQWeatherJwt(): string {
-  const keyId = process.env.QWEATHER_KEY_ID;
-  const developerId = process.env.QWEATHER_DEVELOPER_ID;
-  const projectId = process.env.QWEATHER_PROJECT_ID;
-  const privateKeyPem = process.env.QWEATHER_PRIVATE_KEY?.replace(/\\n/g, "\n");
-
-  if (!keyId || !developerId || !projectId || !privateKeyPem) {
+function getQWeatherConfig(): {
+  apiHost: string;
+  headers: { Accept: string; "X-QW-Api-Key": string };
+} {
+  const apiHost = process.env.QWEATHER_API_HOST?.replace(/\/$/u, "");
+  const apiKey = process.env.QWEATHER_API_KEY;
+  if (!apiHost || !apiKey) {
     throw new WeatherProviderError(
       "configuration",
-      "QWeather JWT configuration is incomplete",
+      "QWeather API host or API key is missing",
     );
   }
 
-  const now = Math.floor(Date.now() / 1_000);
-  const header = encodeBase64Url(JSON.stringify({ alg: "EdDSA", kid: keyId }));
-  const payload = encodeBase64Url(
-    JSON.stringify({
-      iss: developerId,
-      sub: projectId,
-      iat: now - 30,
-      exp: now + 900,
-    }),
-  );
-  const signingInput = `${header}.${payload}`;
-  const signature = sign(
-    null,
-    Buffer.from(signingInput),
-    createPrivateKey(privateKeyPem),
-  );
-
-  return `${signingInput}.${encodeBase64Url(signature)}`;
+  return {
+    apiHost,
+    headers: {
+      Accept: "application/json",
+      "X-QW-Api-Key": apiKey,
+    },
+  };
 }
 
 async function fetchQWeather(place: PlaceCandidate): Promise<WeatherFact> {
-  const apiHost = process.env.QWEATHER_API_HOST?.replace(/\/$/u, "");
-  if (!apiHost) {
-    throw new WeatherProviderError("configuration", "QWeather API host is missing");
-  }
+  const { apiHost, headers } = getQWeatherConfig();
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
 
   try {
     const url = `${apiHost}/weather/v1/current/${place.latitude}/${place.longitude}?localTime=true&lang=zh`;
-    const authorization = `Bearer ${createQWeatherJwt()}`;
     const response = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        Authorization: authorization,
-      },
+      headers,
       signal: controller.signal,
     });
 
@@ -378,10 +354,7 @@ async function fetchQWeather(place: PlaceCandidate): Promise<WeatherFact> {
       const dailyResponse = await fetch(
         `${apiHost}/weather/v1/daily/${place.latitude}/${place.longitude}?days=1&localTime=true&lang=zh`,
         {
-          headers: {
-            Accept: "application/json",
-            Authorization: authorization,
-          },
+          headers,
           signal: controller.signal,
         },
       );
@@ -502,10 +475,7 @@ async function fetchQWeatherDaily(
   startDaysAhead: number,
   targetDate?: string,
 ): Promise<DailyForecast> {
-  const apiHost = process.env.QWEATHER_API_HOST?.replace(/\/$/u, "");
-  if (!apiHost) {
-    throw new WeatherProviderError("configuration", "QWeather API host is missing");
-  }
+  const { apiHost, headers } = getQWeatherConfig();
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
@@ -526,10 +496,7 @@ async function fetchQWeatherDaily(
     const response = await fetch(
       `${apiHost}/weather/v1/daily/${place.latitude}/${place.longitude}?days=${providerDays}&localTime=true&lang=zh`,
       {
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${createQWeatherJwt()}`,
-        },
+        headers,
         signal: controller.signal,
       },
     );
