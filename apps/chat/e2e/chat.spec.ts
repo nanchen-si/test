@@ -136,6 +136,44 @@ test("确认地点后可以通过 Weather MCP 查询当前天气", async ({ page
   })).toBeVisible();
 });
 
+test("允许浏览器定位后可以确认当前位置并查询当前天气", async ({ page }) => {
+  await page.context().grantPermissions(["geolocation"], {
+    origin: "http://127.0.0.1:3000",
+  });
+  await page.context().setGeolocation({ latitude: 39.9042, longitude: 116.4074 });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "使用我的位置" }).click();
+  await page.getByRole("button", { name: "北京市, 北京市, 中国" }).click();
+
+  await expect(
+    page.getByText("北京市, 北京市, 中国当前天气：18°C，晴", { exact: false }),
+  ).toBeVisible();
+
+  await page.reload();
+  await page.getByRole("textbox", { name: "消息" }).fill("那现在天气怎么样");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText("请先告诉我想查询的地点。")).toBeVisible();
+});
+
+test("拒绝浏览器定位后可以回退到城市名称输入", async ({ page }) => {
+  await page.context().grantPermissions([], {
+    origin: "http://127.0.0.1:3000",
+  });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "使用我的位置" }).click();
+  await expect(
+    page.getByText("无法获取当前位置，请输入城市名称。"),
+  ).toBeVisible();
+
+  await page.getByRole("textbox", { name: "消息" }).fill("北京天气");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(
+    page.getByRole("button", { name: "北京市, 北京市, 中国" }),
+  ).toBeVisible();
+});
+
 test("确认地点后可以省略地点继续询问当前天气", async ({ page }) => {
   await page.goto("/");
 

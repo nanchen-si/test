@@ -5,7 +5,7 @@ import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 
-import { resolvePlaces } from "./places.js";
+import { resolveCoordinates, resolvePlaces } from "./places.js";
 import {
   getCurrentWeather,
   getDailyForecast,
@@ -41,6 +41,25 @@ function createWeatherServer() {
         {
           type: "text",
           text: JSON.stringify({ candidates: resolvePlaces(query) }),
+        },
+      ],
+    }),
+  );
+
+  server.registerTool(
+    "resolve_coordinates",
+    {
+      description: "Resolve browser coordinates into confirmed-place candidates.",
+      inputSchema: z.object({
+        latitude: z.number().min(-90).max(90),
+        longitude: z.number().min(-180).max(180),
+      }),
+    },
+    async ({ latitude, longitude }) => ({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ candidates: resolveCoordinates(latitude, longitude) }),
         },
       ],
     }),

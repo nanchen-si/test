@@ -23,6 +23,11 @@ type ComparisonCandidateGroup = {
   candidates: PlaceCandidate[];
 };
 
+type BrowserLocation = {
+  latitude: number;
+  longitude: number;
+};
+
 function readServerEvent(block: string): ServerEvent | null {
   const lines = block.split("\n");
   const event = lines.find((line) => line.startsWith("event: "))?.slice(7);
@@ -40,6 +45,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState("等待输入");
+  const [locationMessage, setLocationMessage] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [candidates, setCandidates] = useState<PlaceCandidate[]>([]);
   const [comparisonCandidates, setComparisonCandidates] = useState<
@@ -50,7 +56,11 @@ export default function ChatPage() {
   >([]);
   const [confirmedPlace, setConfirmedPlace] = useState<PlaceCandidate>();
 
-  async function submitMessage(message: string, selectedPlace?: PlaceCandidate) {
+  async function submitMessage(
+    message: string,
+    selectedPlace?: PlaceCandidate,
+    location?: BrowserLocation,
+  ) {
     if (!message || isSending) {
       return;
     }
@@ -73,7 +83,7 @@ export default function ChatPage() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, message, selectedPlace }),
+        body: JSON.stringify({ sessionId, message, selectedPlace, location }),
       });
 
       if (!response.ok || !response.body) {
@@ -195,6 +205,9 @@ export default function ChatPage() {
         }
         return next;
       });
+      if (location) {
+        setLocationMessage("无法确认当前位置，请输入城市名称。");
+      }
       setStatus("发生错误");
     } finally {
       setIsSending(false);
@@ -204,6 +217,28 @@ export default function ChatPage() {
   function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void submitMessage(draft.trim());
+  }
+
+  function requestCurrentLocation() {
+    if (!navigator.geolocation) {
+      setLocationMessage("当前浏览器不支持定位，请输入城市名称。");
+      return;
+    }
+
+    setLocationMessage("正在获取当前位置…");
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        setLocationMessage("");
+        void submitMessage("使用当前位置查询天气", undefined, {
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+        });
+      },
+      () => {
+        setLocationMessage("无法获取当前位置，请输入城市名称。");
+      },
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 0 },
+    );
   }
 
   return (
@@ -290,6 +325,15 @@ export default function ChatPage() {
         <p className="status" role="status">
           {status}
         </p>
+
+        <button
+          type="button"
+          onClick={requestCurrentLocation}
+          disabled={isSending}
+        >
+          使用我的位置
+        </button>
+        {locationMessage && <p aria-live="polite">{locationMessage}</p>}
 
         <form className="composer" onSubmit={sendMessage}>
           <label htmlFor="message">消息</label>

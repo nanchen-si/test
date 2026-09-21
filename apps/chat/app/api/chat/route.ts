@@ -13,6 +13,7 @@ import {
   getCurrentWeather,
   getDailyForecast,
   getDailyForecastDay,
+  resolveCoordinates,
   resolvePlace,
 } from "../../../lib/location-client";
 import {
@@ -29,6 +30,7 @@ type ChatRequest = {
   sessionId?: unknown;
   message?: unknown;
   selectedPlace?: unknown;
+  location?: unknown;
 };
 
 type EventWriter = (
@@ -217,6 +219,55 @@ export async function POST(request: Request) {
   const sessionId = body.sessionId;
   const message = body.message.trim();
   const session = getSession(sessionId);
+
+  if (body.location !== undefined) {
+    const location = body.location;
+    if (
+      !location ||
+      typeof location !== "object" ||
+      typeof (location as { latitude?: unknown }).latitude !== "number" ||
+      typeof (location as { longitude?: unknown }).longitude !== "number" ||
+      !Number.isFinite((location as { latitude: number }).latitude) ||
+      !Number.isFinite((location as { longitude: number }).longitude) ||
+      (location as { latitude: number }).latitude < -90 ||
+      (location as { latitude: number }).latitude > 90 ||
+      (location as { longitude: number }).longitude < -180 ||
+      (location as { longitude: number }).longitude > 180
+    ) {
+      return Response.json({ error: "定位坐标无效" }, { status: 400 });
+    }
+
+    const latitude = (location as { latitude: number }).latitude;
+    const longitude = (location as { longitude: number }).longitude;
+    appendMessage(sessionId, { role: "user", content: message });
+    session.pendingWeatherComparison = undefined;
+
+    return createSseResponse(async (write) => {
+      write("message.start", { sessionId });
+      write("tool.start", { name: "resolve_coordinates" });
+      const candidates = await resolveCoordinates(latitude, longitude);
+      session.pendingPlaces = candidates;
+      session.pendingWeatherRequest = candidates.length
+        ? { type: "current", question: message }
+        : undefined;
+      write("tool.complete", {
+        name: "resolve_coordinates",
+        resultCount: String(candidates.length),
+      });
+
+      const reply = candidates.length
+        ? "已根据当前位置找到地点，请确认后查询当前天气。"
+        : "无法确认当前位置，请输入城市名称。";
+      await streamAssistantReply(write, reply);
+      appendMessage(sessionId, { role: "assistant", content: reply });
+      if (candidates.length) {
+        write("place.candidates", {
+          candidates: JSON.stringify(candidates),
+        });
+      }
+      write("message.complete", { message: reply });
+    });
+  }
 
   if (body.selectedPlace !== undefined) {
     const requestedPlace = body.selectedPlace;

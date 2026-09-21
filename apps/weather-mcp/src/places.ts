@@ -64,3 +64,24 @@ export function resolvePlaces(query: string): PlaceCandidate[] {
       .includes(normalizedQuery),
   );
 }
+
+export function resolveCoordinates(
+  latitude: number,
+  longitude: number,
+): PlaceCandidate[] {
+  const earthRadiusKm = 6_371;
+  const nearest = PLACE_CATALOG
+    .map((place) => {
+      const latitudeDelta = (place.latitude - latitude) * (Math.PI / 180);
+      const longitudeDelta = (place.longitude - longitude) * (Math.PI / 180);
+      const averageLatitude = ((place.latitude + latitude) / 2) * (Math.PI / 180);
+      const distanceKm = earthRadiusKm * Math.sqrt(
+        latitudeDelta ** 2 +
+          (Math.cos(averageLatitude) * longitudeDelta) ** 2,
+      );
+      return { place, distanceKm };
+    })
+    .sort((first, second) => first.distanceKm - second.distanceKm)[0];
+
+  return nearest && nearest.distanceKm <= 100 ? [nearest.place] : [];
+}
